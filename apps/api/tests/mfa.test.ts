@@ -295,6 +295,32 @@ describeDb("mfa endpoints", () => {
       expect(setCookie).toBeDefined();
     });
 
+    it("honors persistent:false from login in the challenge cookie", async () => {
+      await activeUser(harness.app, harness, "mfa-verify-2b@example.com");
+      const loginRes1 = await login(harness.app, "mfa-verify-2b@example.com");
+      const cookie = cookieOf(loginRes1);
+      const enrollRes = await request(harness.app)
+        .post(`${MFA_BASE}/enroll`)
+        .set("Cookie", cookie);
+      const { secret } = enrollRes.body;
+      const code = generateTotpCode(secret);
+      await request(harness.app)
+        .post(`${MFA_BASE}/confirm`)
+        .set("Cookie", cookie)
+        .send({ secret, code });
+      const loginRes2 = await request(harness.app)
+        .post(`${AUTH_BASE}/login`)
+        .set("Origin", "http://localhost:5173")
+        .send({ email: "mfa-verify-2b@example.com", password: PASSWORD, persistent: false });
+      const { mfaToken } = loginRes2.body;
+      const res = await request(harness.app)
+        .post(`${MFA_BASE}/verify`)
+        .send({ mfaToken, code });
+      expect(res.status).toBe(200);
+      const setCookie = res.headers["set-cookie"][0];
+      expect(setCookie).not.toContain("Max-Age");
+    });
+
     it("invalidates token after 5 failed attempts", async () => {
       await activeUser(harness.app, harness, "mfa-verify-3@example.com");
       const loginRes1 = await login(harness.app, "mfa-verify-3@example.com");

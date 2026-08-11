@@ -1,4 +1,4 @@
-import { type FormEvent, useState } from "react";
+import { type SubmitEvent, useState } from "react";
 import { Link } from "react-router-dom";
 import { authApi, isEmail } from "../lib/api";
 import { useSubmit } from "../lib/submit";
@@ -14,7 +14,7 @@ export function ForgotPasswordPage() {
   const [done, setDone] = useState(false);
   const [devLink, setDevLink] = useState<string | null>(null);
 
-  function onSubmit(event: FormEvent) {
+  function onSubmit(event: SubmitEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!isEmail(email)) {
       setEmailError("Enter a valid email address");
@@ -53,7 +53,7 @@ export function ForgotPasswordPage() {
   }
 
   return (
-    <AuthShell footer="Auuth never reveals whether an email is registered.">
+    <AuthShell>
       <Card title="Forgot your password?" subtitle="Enter your email and we'll send you a reset link.">
         {error ? <Alert tone="error">{error}</Alert> : null}
         <form onSubmit={onSubmit} noValidate>

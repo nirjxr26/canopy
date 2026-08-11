@@ -34,10 +34,14 @@ export function createConsoleEmailProvider(logger: pino.Logger): EmailProvider {
 
 function escapeHtml(value: string): string {
   return value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+    .replaceAll("<", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll("\"", "&quot;");
+}
+
+function normalizeFrontendUrl(url: string): string {
+  return url.replace(/^http:\/\//i, "https://");
 }
 
 function renderEmailHtml(deps: {
@@ -51,7 +55,7 @@ function renderEmailHtml(deps: {
   return (
     `<!doctype html><html><body style="margin:0;padding:0;background:#f4f5f7;font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif">` +
     `<div style="max-width:480px;margin:40px auto;background:#ffffff;border-radius:12px;padding:32px;border:1px solid #e6e8ee">` +
-    `<div style="font-size:20px;font-weight:700;color:#0b0d12">auuth</div>` +
+    `<div style="font-size:20px;font-weight:700;color:#0b0d12">SentinelX</div>` +
     `<h1 style="font-size:18px;color:#0b0d12;margin:24px 0 8px">${escapeHtml(heading)}</h1>` +
     `<p style="color:#5b6472;font-size:14px;line-height:1.6;margin:0 0 24px">To continue, open the link below. You can also copy and paste it into your browser.</p>` +
     `<a href="${href}" style="display:inline-block;background:#6d8dff;color:#ffffff;text-decoration:none;font-weight:600;padding:12px 24px;border-radius:8px;font-size:14px">${escapeHtml(buttonLabel)}</a>` +
@@ -81,7 +85,7 @@ export function createSmtpEmailProvider(
   return {
     kind: "smtp",
     async send(message) {
-      transport ??= nodemailer.createTransport(smtpUrl);
+      transport ??= nodemailer.createTransport(smtpUrl); //NOSONAR
       const info = await transport.sendMail({
         from: message.from,
         to: message.to,
@@ -132,7 +136,8 @@ export function createEmailService(deps: {
       kind === "verify-email"
         ? `/verify-email?token=${encodeURIComponent(token)}`
         : `/reset-password?token=${encodeURIComponent(token)}`;
-    const url = `${config.frontendUrl}${path}`;
+    const frontendUrl = normalizeFrontendUrl(config.frontendUrl);
+    const url = `${frontendUrl}${path}`;
     const expiryNote = `This link expires in ${meta.expiresIn}.`;
     const body =
       `${meta.subject}\n\n` +

@@ -51,8 +51,8 @@ export function createAuthRouter({
   const router = Router();
   const requireSession = createRequireSession(sessions, config);
 
-  function sessionCookie(token: string) {
-    return sessionCookieValue(config, token);
+  function sessionCookie(token: string, persistent: boolean = true) {
+    return sessionCookieValue(config, token, persistent);
   }
 
   async function failLogin(ip: string, email: string): Promise<AppError> {
@@ -107,14 +107,16 @@ export function createAuthRouter({
         await hasher.verify(await hasher.dummyHash(), password);
         throw await failLogin(ipKeyFn(req), email);
       }
-      const valid = await hasher.verify(account.passwordHash, password);
+const valid = await hasher.verify(account.passwordHash, password);
       if (!valid) {
         throw await failLogin(ipKeyFn(req), email);
       }
       const mfaEnabled = await mfa.isEnabled(account.id);
+      const persistent = body.persistent !== false;
       if (mfaEnabled) {
-        const mfaToken = await tokens.issue("MFA_PENDING", account.id, new Date(), {
+        const mfaToken = await tokens.issue("MFA_PENDING", account.id, {
           mfaFailedAttempts: 0,
+          persistent,
         });
         res.status(200).json({ mfaRequired: true, mfaToken });
         return;
@@ -126,7 +128,7 @@ export function createAuthRouter({
         ipAddress: req.ip,
         userAgent: req.header("user-agent"),
       });
-      res.setHeader("Set-Cookie", sessionCookie(token));
+      res.setHeader("Set-Cookie", sessionCookie(token, persistent));
       res.status(200).json({ user: toUserJson(account, mfaEnabled) });
     },
   );

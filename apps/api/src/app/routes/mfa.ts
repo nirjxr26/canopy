@@ -85,7 +85,8 @@ export function createMfaRouter({ config, limiter, sessions, users, tokens, mfa 
         ipAddress: req.ip,
         userAgent: req.header("user-agent"),
       });
-      res.setHeader("Set-Cookie", sessionCookieValue(config, token));
+      const persistent = (pending.metadata?.persistent as boolean | undefined) ?? true;
+      res.setHeader("Set-Cookie", sessionCookieValue(config, token, persistent));
       res.status(200).json({ user: toUserJson(user, true) });
     },
   );

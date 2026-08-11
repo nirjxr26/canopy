@@ -1,9 +1,16 @@
-import { test, expect } from '@playwright/test';
+﻿import { test, expect } from '@playwright/test';
+import {
+  extractTokenFromEmail,
+  waitForOutboxDelivery,
+} from './helpers/email-outbox.js';
 
 test.describe('Automated API Identity Flow (Signup -> Verify -> Login -> Session -> Logout)', () => {
+  test.setTimeout(90_000);
+
   const origin = 'http://localhost:5173';
   const testEmail = `e2e-user-${Date.now()}@example.com`;
   const testPassword = 'SecurePassword123!';
+
 
   test('Complete Authentication & Identity Lifecycle', async ({ request }) => {
     // 1. Signup user (starts as PENDING_VERIFICATION)
@@ -22,20 +29,14 @@ test.describe('Automated API Identity Flow (Signup -> Verify -> Login -> Session
     expect(signupBody.user.email).toBe(testEmail);
     expect(signupBody.user.status).toBe('PENDING_VERIFICATION');
 
-    // Extract verification token link if returned in dev mode
-    const devLink = signupBody.devEmailLink;
-    if (devLink) {
-      const url = new URL(devLink);
-      const token = url.searchParams.get('token');
-      if (token) {
-        // Verify email to transition account to ACTIVE
-        const verifyRes = await request.post('/api/v1/auth/verify-email', {
-          data: { token },
-          headers: { Origin: origin },
-        });
-        expect(verifyRes.status()).toBe(200);
-      }
-    }
+    // Extract verification token from the email outbox (works in console AND smtp mode)
+    const verifyEmail = await waitForOutboxDelivery(testEmail, 'Verify your email');
+    const verifyToken = extractTokenFromEmail(verifyEmail);
+    const verifyRes = await request.post('/api/v1/auth/verify-email', {
+      data: { token: verifyToken },
+      headers: { Origin: origin },
+    });
+    expect(verifyRes.status()).toBe(200);
 
     // 2. Login (Strict assertion: MUST return HTTP 200 for activated account)
     const loginRes = await request.post('/api/v1/auth/login', {

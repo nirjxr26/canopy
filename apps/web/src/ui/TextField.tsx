@@ -6,7 +6,7 @@ interface TextFieldProps extends InputHTMLAttributes<HTMLInputElement> {
   hint?: string;
 }
 
-export function TextField({ label, error, hint, id, className, ...rest }: TextFieldProps) {
+export function TextField({ label, error, hint, id, className, ...rest }: Readonly<TextFieldProps>) {
   const autoId = useId();
   const inputId = id ?? autoId;
   

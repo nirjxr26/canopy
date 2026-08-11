@@ -1,4 +1,4 @@
-import { type FormEvent, useState } from "react";
+import { type SubmitEvent, useState } from "react";
 import { Link, Navigate, useNavigate } from "react-router-dom";
 import { useAuth } from "../lib/auth";
 import { ApiError, mfaApi } from "../lib/api";
@@ -32,7 +32,7 @@ export function MfaChallengePage() {
     setError(null);
   }
 
-  function onSubmit(event: FormEvent) {
+  function onSubmit(event: SubmitEvent<HTMLFormElement>) {
     event.preventDefault();
     if (code.trim() === "") {
       setFieldError(mode === "totp" ? "Enter the 6-digit code" : "Enter a recovery code");

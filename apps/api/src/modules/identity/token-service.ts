@@ -12,8 +12,8 @@ export interface TokenService {
   issue(
     kind: TokenKind,
     userId: string,
-    now?: Date,
     metadata?: Record<string, unknown>,
+    now?: Date,
   ): Promise<string>;
   consume(kind: TokenKind, rawToken: string, now?: Date): Promise<string | null>;
   findByHash(kind: TokenKind, rawToken: string, now?: Date): Promise<PendingToken | null>;
@@ -27,7 +27,7 @@ export function hashToken(value: string): string {
 
 export function createTokenService(repository: TokenRepository): TokenService {
   return {
-    async issue(kind, userId, now = new Date(), metadata) {
+    async issue(kind, userId, metadata, now = new Date()) {
       const raw = randomBytes(32).toString("base64url");
       await repository.insert({
         id: createId("tok"),

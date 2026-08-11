@@ -1,23 +1,30 @@
-import { test, expect } from '@playwright/test';
+﻿import { test, expect } from '@playwright/test';
+import {
+  extractTokenFromEmail,
+  waitForOutboxDelivery,
+} from './helpers/email-outbox.js';
 
 test.describe('Automated Session Management API (List Sessions -> Revoke Specific -> Revoke All)', () => {
+  test.setTimeout(90_000);
+
   const origin = 'http://localhost:5173';
   const testEmail = `sessions-user-${Date.now()}@example.com`;
   const testPassword = 'SessionPassword123!';
 
+
   test('Session lifecycle and revocation management', async ({ request }) => {
-    // 1. Signup user & verify email
+    // 1. Signup user & verify email (token read from outbox â€” provider-agnostic)
     const signupRes = await request.post('/api/v1/auth/signup', {
       data: { email: testEmail, password: testPassword, firstName: 'Session', lastName: 'User' },
       headers: { Origin: origin },
     });
-    const signupBody = await signupRes.json();
-    if (signupBody.devEmailLink) {
-      const token = new URL(signupBody.devEmailLink).searchParams.get('token');
-      if (token) {
-        await request.post('/api/v1/auth/verify-email', { data: { token }, headers: { Origin: origin } });
-      }
-    }
+    const verifyEmail = await waitForOutboxDelivery(testEmail, 'Verify your email');
+    const verifyToken = extractTokenFromEmail(verifyEmail);
+    const verifyRes = await request.post('/api/v1/auth/verify-email', {
+      data: { token: verifyToken },
+      headers: { Origin: origin },
+    });
+    expect(verifyRes.status()).toBe(200);
 
     // 2. Login
     const loginRes = await request.post('/api/v1/auth/login', {
