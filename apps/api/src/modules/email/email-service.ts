@@ -1,0 +1,187 @@
+import type pino from "pino";
+import nodemailer from "nodemailer";
+import type { Config } from "../../infrastructure/config/config.js";
+import type { OutboxRepository } from "./outbox-repository.js";
+
+export const OUTBOX_POLL_MS = 15_000;
+const OUTBOX_BATCH_SIZE = 100;
+
+export interface EmailMessage {
+  from: string;
+  to: string;
+  subject: string;
+  body: string;
+  html?: string;
+}
+
+export interface EmailProvider {
+  kind: "console" | "smtp";
+  send(message: EmailMessage): Promise<void>;
+}
+
+export function createConsoleEmailProvider(logger: pino.Logger): EmailProvider {
+  return {
+    kind: "console",
+    async send(message) {
+      logger.info(
+        { from: message.from, to: message.to, subject: message.subject },
+        `email outbox: sending to ${message.to} — subject: ${message.subject}`,
+      );
+      logger.debug({ body: message.body }, "email outbox body");
+    },
+  };
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function renderEmailHtml(deps: {
+  heading: string;
+  url: string;
+  buttonLabel: string;
+  expiryNote: string;
+}): string {
+  const { heading, url, buttonLabel, expiryNote } = deps;
+  const href = escapeHtml(url);
+  return (
+    `<!doctype html><html><body style="margin:0;padding:0;background:#f4f5f7;font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif">` +
+    `<div style="max-width:480px;margin:40px auto;background:#ffffff;border-radius:12px;padding:32px;border:1px solid #e6e8ee">` +
+    `<div style="font-size:20px;font-weight:700;color:#0b0d12">auuth</div>` +
+    `<h1 style="font-size:18px;color:#0b0d12;margin:24px 0 8px">${escapeHtml(heading)}</h1>` +
+    `<p style="color:#5b6472;font-size:14px;line-height:1.6;margin:0 0 24px">To continue, open the link below. You can also copy and paste it into your browser.</p>` +
+    `<a href="${href}" style="display:inline-block;background:#6d8dff;color:#ffffff;text-decoration:none;font-weight:600;padding:12px 24px;border-radius:8px;font-size:14px">${escapeHtml(buttonLabel)}</a>` +
+    `<p style="color:#9aa3b2;font-size:12px;line-height:1.5;margin:24px 0 0;word-break:break-all">${href}</p>` +
+    `<p style="color:#9aa3b2;font-size:12px;line-height:1.5;margin:12px 0 0">${escapeHtml(expiryNote)} If you didn't request this, you can safely ignore this email.</p>` +
+    `</div></body></html>`
+  );
+}
+
+export function createSmtpEmailProvider(
+  logger: pino.Logger,
+  smtpUrl: string,
+): EmailProvider {
+  let transport: nodemailer.Transporter | null = null;
+  let host: string;
+  try {
+    const parsed = new URL(smtpUrl);
+    if (parsed.protocol !== "smtp:" && parsed.protocol !== "smtps:") {
+      throw new Error(`SMTP_URL scheme must be "smtp:" or "smtps:", got "${parsed.protocol}"`);
+    }
+    host = parsed.hostname;
+  } catch (err) {
+    throw new Error(
+      `Invalid SMTP_URL: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+  return {
+    kind: "smtp",
+    async send(message) {
+      transport ??= nodemailer.createTransport(smtpUrl);
+      const info = await transport.sendMail({
+        from: message.from,
+        to: message.to,
+        subject: message.subject,
+        text: message.body,
+        html: message.html ?? message.body,
+      });
+      if (info.rejected.length > 0) {
+        throw new Error(`SMTP rejected recipients: ${info.rejected.join(", ")}`);
+      }
+      logger.info(
+        { to: message.to, subject: message.subject, host, messageId: info.messageId },
+        "email sent via smtp",
+      );
+    },
+  };
+}
+
+export type EmailKind = "verify-email" | "password-reset";
+
+export interface EmailService {
+  queue(
+    kind: EmailKind,
+    recipient: string,
+    token: string,
+  ): Promise<{ devLink: string | null }>;
+  processDueEmails(now?: Date): Promise<number>;
+}
+
+const EMAIL_META: Record<EmailKind, { subject: string; buttonLabel: string; expiresIn: string }> = {
+  "verify-email": { subject: "Verify your email", buttonLabel: "Verify email", expiresIn: "24 hours" },
+  "password-reset": { subject: "Reset your password", buttonLabel: "Reset password", expiresIn: "30 minutes" },
+};
+
+export function createEmailService(deps: {
+  outbox: OutboxRepository;
+  provider: EmailProvider;
+  config: Pick<Config, "emailFrom" | "frontendUrl" | "emailRetryMax" | "emailRetryBackoffMs">;
+}): EmailService {
+  const { outbox, provider, config } = deps;
+
+  function buildMessage(kind: EmailKind, recipient: string, token: string): {
+    message: EmailMessage;
+    url: string;
+  } {
+    const meta = EMAIL_META[kind];
+    const path =
+      kind === "verify-email"
+        ? `/verify-email?token=${encodeURIComponent(token)}`
+        : `/reset-password?token=${encodeURIComponent(token)}`;
+    const url = `${config.frontendUrl}${path}`;
+    const expiryNote = `This link expires in ${meta.expiresIn}.`;
+    const body =
+      `${meta.subject}\n\n` +
+      `Open this link to continue: ${url}\n` +
+      `${expiryNote} If you didn't request this, you can ignore this email.`;
+    const html = renderEmailHtml({
+      heading: meta.subject,
+      url,
+      buttonLabel: meta.buttonLabel,
+      expiryNote,
+    });
+    return {
+      message: { from: config.emailFrom, to: recipient, subject: meta.subject, body, html },
+      url,
+    };
+  }
+
+  return {
+    async queue(kind, recipient, token) {
+      const { message, url } = buildMessage(kind, recipient, token);
+      await outbox.insert({
+        recipient: message.to,
+        subject: message.subject,
+        body: message.body,
+        htmlBody: message.html ?? null,
+      });
+      return { devLink: provider.kind === "console" ? url : null };
+    },
+
+    async processDueEmails(now = new Date()) {
+      const due = await outbox.pickDue(now, config.emailRetryMax, OUTBOX_BATCH_SIZE);
+      let sent = 0;
+      for (const message of due) {
+        try {
+          await provider.send({
+            from: config.emailFrom,
+            to: message.recipient,
+            subject: message.subject,
+            body: message.body,
+            html: message.htmlBody ?? undefined,
+          });
+          await outbox.markSent(message.id, now);
+          sent += 1;
+        } catch {
+          const backoff = config.emailRetryBackoffMs * 2 ** message.attemptCount;
+          await outbox.recordFailure(message.id, new Date(now.getTime() + backoff));
+        }
+      }
+      return sent;
+    },
+  };
+}
