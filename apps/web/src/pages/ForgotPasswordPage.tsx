@@ -1,8 +1,7 @@
 import { type FormEvent, useState } from "react";
 import { Link } from "react-router-dom";
-import { authApi } from "../lib/api";
+import { authApi, isEmail } from "../lib/api";
 import { useSubmit } from "../lib/submit";
-import { isEmail } from "../lib/api";
 import { Alert } from "../ui/Alert";
 import { Button } from "../ui/Button";
 import { AuthShell, Card } from "../ui/Layout";
@@ -43,7 +42,7 @@ export function ForgotPasswordPage() {
               <a href={devLink}>{devLink}</a>
             </Alert>
           ) : null}
-          <div className="inline-form__actions">
+          <div className="flex gap-2.5 mt-2">
             <Link to="/login">
               <Button variant="ghost">Back to sign in</Button>
             </Link>
@@ -71,7 +70,7 @@ export function ForgotPasswordPage() {
             Send reset link
           </Button>
         </form>
-        <div className="inline-form__row">
+        <div className="flex items-center justify-between gap-2 mt-3 text-text-muted text-[13.5px]">
           <span>
             Remembered it? <Link to="/login">Sign in</Link>
           </span>

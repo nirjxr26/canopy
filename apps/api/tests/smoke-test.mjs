@@ -4,7 +4,7 @@ import { createHmac } from "node:crypto";
 
 const BASE = "http://localhost:3000";
 const DB_URL = process.env.DATABASE_URL ?? "postgres://postgres:postgres@localhost:5432/auuth";
-const PASSWORD = "correct-horse-battery-staple-1";
+const PASSWORD = "Correct-horse-battery-staple-1";
 const ts = Date.now();
 const EMAIL1 = `smoke-mfa-${ts}@example.com`;
 const EMAIL2 = `smoke-nomfa-${ts}@example.com`;

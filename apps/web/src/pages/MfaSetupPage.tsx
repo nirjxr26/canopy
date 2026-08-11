@@ -92,28 +92,30 @@ export function MfaSetupPage() {
           enrollError !== null ? (
             <>
               <Alert tone="error">{enrollError}</Alert>
-              <div className="inline-form__actions">
+              <div className="flex gap-2.5 mt-2">
                 <Button variant="ghost" onClick={() => void enrollRun(doEnroll)}>
                   Try again
                 </Button>
               </div>
             </>
           ) : qrDataUrl === null ? (
-            <div className="inline-form">
-              <span className="spinner spinner--plain" aria-hidden="true" />
-              <p>Generating your secret...</p>
+            <div className="flex flex-col items-center justify-center gap-3 my-6">
+              <span className="w-5 h-5 border-2 border-accent/25 border-t-accent rounded-full animate-spin" aria-hidden="true" />
+              <p className="text-sm text-text-muted">Generating your secret...</p>
             </div>
           ) : (
             <>
-              <img className="mfa-qr" src={qrDataUrl} alt="QR code for authenticator app" />
-              <p className="field__hint">
+              <img className="block w-[220px] h-[220px] mx-auto mb-5 rounded-md border border-border" src={qrDataUrl} alt="QR code for authenticator app" />
+              <p className="text-[12.5px] text-text-faint mb-3">
                 Open your authenticator app, tap &quot;Add account&quot;, and scan the QR code
                 below. Can&apos;t scan it? Enter the secret manually.
               </p>
-              <div className="field">
-                <label className="field__label">Manual entry</label>
-                <div className="mfa-secret">
-                  <code className="code-chip">{secret}</code>
+              <div className="flex flex-col gap-1.5 mb-4">
+                <label className="text-xs font-medium text-text">Manual entry</label>
+                <div className="flex items-center gap-2">
+                  <code className="flex-1 text-center font-mono text-xs bg-bg-elevated border border-border rounded-md px-2 py-1 text-text-muted tracking-wider overflow-hidden text-ellipsis whitespace-nowrap">
+                    {secret}
+                  </code>
                   <Button variant="ghost" onClick={copySecret}>
                     Copy
                   </Button>
@@ -122,7 +124,7 @@ export function MfaSetupPage() {
               <Button block onClick={() => setStep("verify")}>
                 Continue
               </Button>
-              <div className="inline-form__actions">
+              <div className="flex gap-2.5 mt-2">
                 <Button variant="ghost" onClick={() => navigate("/")}>
                   Not now
                 </Button>
@@ -157,16 +159,16 @@ export function MfaSetupPage() {
               Store these somewhere safe — you&apos;ll need them if you lose your authenticator.
               Each can be used only once.
             </Alert>
-            <div className="mfa-codes">
+            <div className="grid grid-cols-2 gap-2 mb-4">
               {recoveryCodes !== null
                 ? recoveryCodes.map((recoveryCode) => (
-                    <code key={recoveryCode} className="code-chip">
+                    <code key={recoveryCode} className="font-mono text-xs text-center bg-bg-elevated border border-border rounded-md px-2 py-1 text-text-muted tracking-wider">
                       {recoveryCode}
                     </code>
                   ))
                 : null}
             </div>
-            <div className="inline-form__actions">
+            <div className="flex gap-2.5 mb-3">
               <Button variant="ghost" onClick={copyCodes}>
                 Copy codes
               </Button>

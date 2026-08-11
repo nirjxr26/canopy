@@ -10,7 +10,8 @@
     "migrate": "tsx src/infrastructure/db/migrate.ts",
     "db": "tsx scripts/query-db.ts",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "argon2": "^0.45.1",
@@ -25,6 +26,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@playwright/test": "^1.62.1",
     "@types/express": "^5.0.6",
     "@types/node": "^26.2.0",
     "@types/nodemailer": "^8.0.1",

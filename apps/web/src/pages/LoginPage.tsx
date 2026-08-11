@@ -6,6 +6,7 @@ import { useSubmit } from "../lib/submit";
 import { Alert } from "../ui/Alert";
 import { Button } from "../ui/Button";
 import { AuthShell, Card } from "../ui/Layout";
+import { PasswordField } from "../ui/PasswordField";
 import { TextField } from "../ui/TextField";
 
 export function LoginPage() {
@@ -63,7 +64,7 @@ export function LoginPage() {
   }
 
   return (
-    <AuthShell footer="Protected by auuth — sessions, rate limits and audit events included.">
+    <AuthShell>
       <Card title="Welcome back" subtitle="Sign in to your account to continue.">
         {error ? <Alert tone="error">{error}</Alert> : null}
         {resendMessage !== null ? (
@@ -82,9 +83,8 @@ export function LoginPage() {
             error={fieldErrors.email}
             onChange={(e) => setEmail(e.target.value)}
           />
-          <TextField
+          <PasswordField
             label="Password"
-            type="password"
             autoComplete="current-password"
             placeholder="••••••••••••"
             value={password}
@@ -95,12 +95,12 @@ export function LoginPage() {
             Sign in
           </Button>
         </form>
-        <div className="inline-form__row">
+        <div className="flex items-center justify-between gap-2 mt-3 text-text-muted text-[13.5px]">
           <Link to="/forgot-password">Forgot password?</Link>
           <Link to="/signup">Create an account</Link>
         </div>
         {error !== null ? (
-          <div className="inline-form__row">
+          <div className="flex items-center justify-center gap-2 mt-4 text-text-muted text-[13.5px]">
             <Button variant="ghost" loading={resend.pending} onClick={onResend}>
               Email not verified? Resend the link
             </Button>

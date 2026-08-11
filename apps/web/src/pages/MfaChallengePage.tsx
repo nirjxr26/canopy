@@ -65,7 +65,7 @@ export function MfaChallengePage() {
         {expired ? (
           <>
             <Alert tone="error">This code expired. Please sign in again.</Alert>
-            <div className="inline-form__actions">
+            <div className="flex gap-2.5 mt-2">
               <Link to="/login">
                 <Button>Back to sign in</Button>
               </Link>
@@ -90,7 +90,7 @@ export function MfaChallengePage() {
                 Verify
               </Button>
             </form>
-            <div className="inline-form__actions">
+            <div className="flex gap-2.5 mt-2">
               <Button variant="ghost" onClick={toggleMode}>
                 {mode === "totp" ? "Use a recovery code" : "Use the authenticator app"}
               </Button>
