@@ -8,6 +8,28 @@ import type { UserRecord, UserRepository, UserWithPasswordHash } from "./user-re
 export const PASSWORD_MIN_LENGTH = 12;
 export const PASSWORD_MAX_LENGTH = 128;
 
+export interface PasswordRequirement {
+  label: string;
+  met: boolean;
+}
+
+export function getPasswordRequirements(password: string): PasswordRequirement[] {
+  return [
+    {
+      label: `At least ${PASSWORD_MIN_LENGTH} characters`,
+      met: password.length >= PASSWORD_MIN_LENGTH,
+    },
+    {
+      label: `No more than ${PASSWORD_MAX_LENGTH} characters`,
+      met: password.length <= PASSWORD_MAX_LENGTH,
+    },
+    { label: "Contains an uppercase letter", met: /[A-Z]/.test(password) },
+    { label: "Contains a lowercase letter", met: /[a-z]/.test(password) },
+    { label: "Contains a number", met: /\d/.test(password) },
+    { label: "Contains a special character", met: /[^A-Za-z0-9]/.test(password) },
+  ];
+}
+
 export interface RegisterInput {
   email: string;
   password: string;
@@ -31,8 +53,14 @@ export interface UserService {
 }
 
 export function assertPasswordPolicy(password: string): void {
-  if (password.length < PASSWORD_MIN_LENGTH || password.length > PASSWORD_MAX_LENGTH) {
-    throw new AppError(ERROR_CODES.VALIDATION, `Password must be ${PASSWORD_MIN_LENGTH}-${PASSWORD_MAX_LENGTH} characters`);
+  const unmet = getPasswordRequirements(password)
+    .filter((r) => !r.met)
+    .map((r) => r.label);
+  if (unmet.length > 0) {
+    throw new AppError(
+      ERROR_CODES.VALIDATION,
+      `Password must meet all requirements: ${unmet.join(", ")}.`,
+    );
   }
 }
 

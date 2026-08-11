@@ -39,21 +39,21 @@ export function HomePage() {
       <>
         <Card title={`Hi${user.firstName ? ` ${user.firstName}` : ""}`} subtitle="You're signed in.">
           {logoutSubmit.error ? <Alert tone="error">{logoutSubmit.error}</Alert> : null}
-          <div className="inline-form">
-            <div className="inline-form__row">
+          <div className="flex flex-col gap-1 mt-4.5">
+            <div className="flex items-center justify-between gap-2 mt-3 text-text-muted text-[13.5px]">
               <span>Email</span>
-              <strong>{user.email}</strong>
+              <strong className="text-text font-semibold">{user.email}</strong>
             </div>
-            <div className="inline-form__row">
+            <div className="flex items-center justify-between gap-2 mt-3 text-text-muted text-[13.5px]">
               <span>Status</span>
-              <strong>{user.status}</strong>
+              <strong className="text-text font-semibold">{user.status}</strong>
             </div>
-            <div className="inline-form__row">
+            <div className="flex items-center justify-between gap-2 mt-3 text-text-muted text-[13.5px]">
               <span>Email verified</span>
-              <strong>{user.emailVerified ? "Yes" : "No"}</strong>
+              <strong className="text-text font-semibold">{user.emailVerified ? "Yes" : "No"}</strong>
             </div>
           </div>
-          <div className="inline-form__actions">
+          <div className="flex gap-2.5 mt-4">
             <Button
               variant="ghost"
               loading={logoutSubmit.pending}
@@ -63,37 +63,39 @@ export function HomePage() {
             </Button>
           </div>
         </Card>
-        <Card title="Two-factor authentication" subtitle="Protect your account with a second factor.">
-          {!user.mfaEnabled ? (
-            <>
-              <p>Add an extra layer of security to your account.</p>
-              <div className="inline-form__actions">
-                <Button onClick={() => navigate("/mfa/setup")}>Enable two-factor authentication</Button>
-              </div>
-            </>
-          ) : (
-            <>
-              <p>Two-factor authentication is on.</p>
-              {disableSubmit.error ? <Alert tone="error">{disableSubmit.error}</Alert> : null}
-              <form onSubmit={onDisable} noValidate>
-                <TextField
-                  label="Authentication code"
-                  type="text"
-                  inputMode="numeric"
-                  autoComplete="one-time-code"
-                  maxLength={6}
-                  placeholder="123456"
-                  value={code}
-                  error={fieldError}
-                  onChange={(e) => setCode(e.target.value)}
-                />
-                <Button type="submit" loading={disableSubmit.pending}>
-                  Disable
-                </Button>
-              </form>
-            </>
-          )}
-        </Card>
+        <div className="mt-4">
+          <Card title="Two-factor authentication" subtitle="Protect your account with a second factor.">
+            {!user.mfaEnabled ? (
+              <>
+                <p className="text-sm text-text-muted mb-4">Add an extra layer of security to your account.</p>
+                <div className="flex gap-2.5 mt-2">
+                  <Button onClick={() => navigate("/mfa/setup")}>Enable two-factor authentication</Button>
+                </div>
+              </>
+            ) : (
+              <>
+                <p className="text-sm text-text-muted mb-4">Two-factor authentication is on.</p>
+                {disableSubmit.error ? <Alert tone="error">{disableSubmit.error}</Alert> : null}
+                <form onSubmit={onDisable} noValidate>
+                  <TextField
+                    label="Authentication code"
+                    type="text"
+                    inputMode="numeric"
+                    autoComplete="one-time-code"
+                    maxLength={6}
+                    placeholder="123456"
+                    value={code}
+                    error={fieldError}
+                    onChange={(e) => setCode(e.target.value)}
+                  />
+                  <Button type="submit" loading={disableSubmit.pending}>
+                    Disable
+                  </Button>
+                </form>
+              </>
+            )}
+          </Card>
+        </div>
       </>
     </AuthShell>
   );

@@ -26,8 +26,8 @@ import {
 import { describeDb, resetTestDatabase, TEST_DATABASE_URL, TEST_MFA_KEY } from "./helpers/db.js";
 import { migrateToLatest } from "../src/infrastructure/db/migrate.js";
 
-const PASSWORD = "correct-horse-battery-staple-1";
-const NEW_PASSWORD = "new-correct-horse-battery-staple-2";
+const PASSWORD = "Correct-horse-battery-staple-1";
+const NEW_PASSWORD = "New-correct-horse-battery-staple-2";
 const ORIGIN = "http://localhost:5173";
 const BASE_URL = "/api/v1/auth";
 

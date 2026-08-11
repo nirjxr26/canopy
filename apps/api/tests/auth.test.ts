@@ -22,7 +22,7 @@ import { createSessionService } from "../src/modules/session/session-service.js"
 import { describeDb, resetTestDatabase, TEST_DATABASE_URL, TEST_MFA_KEY } from "./helpers/db.js";
 import { migrateToLatest } from "../src/infrastructure/db/migrate.js";
 
-const PASSWORD = "correct-horse-battery-staple-1";
+const PASSWORD = "Correct-horse-battery-staple-1";
 const BASE_URL = "/api/v1/auth";
 
 class RecordingProvider implements EmailProvider {

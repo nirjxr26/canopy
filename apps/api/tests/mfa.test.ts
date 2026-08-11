@@ -23,7 +23,7 @@ import { generateTotpCode } from "../src/infrastructure/crypto/totp.js";
 import { describeDb, resetTestDatabase, TEST_DATABASE_URL, TEST_MFA_KEY } from "./helpers/db.js";
 import { migrateToLatest } from "../src/infrastructure/db/migrate.js";
 
-const PASSWORD = "correct-horse-battery-staple-1";
+const PASSWORD = "Correct-horse-battery-staple-1";
 const MFA_BASE = "/api/v1/auth";
 const AUTH_BASE = "/api/v1/auth";
 

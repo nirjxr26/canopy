@@ -44,7 +44,7 @@ export function ResetPasswordPage() {
             <Alert tone="error">
               This link is missing its reset token. Use the link from your email and try again.
             </Alert>
-            <div className="inline-form__actions">
+            <div className="flex gap-2.5 mt-2">
               <Link to="/forgot-password">
                 <Button variant="ghost">Request a new link</Button>
               </Link>
@@ -53,7 +53,7 @@ export function ResetPasswordPage() {
         ) : done ? (
           <>
             <Alert tone="success">Your password has been reset. You can now sign in.</Alert>
-            <div className="inline-form__actions">
+            <div className="flex gap-2.5 mt-2">
               <Link to="/login">
                 <Button>Go to sign in</Button>
               </Link>

@@ -6,6 +6,8 @@ import { assertPasswordValid, isEmail } from "../lib/api";
 import { Alert } from "../ui/Alert";
 import { Button } from "../ui/Button";
 import { AuthShell, Card } from "../ui/Layout";
+import { PasswordField } from "../ui/PasswordField";
+import { PasswordPolicy } from "../ui/PasswordPolicy";
 import { TextField } from "../ui/TextField";
 
 export function SignupPage() {
@@ -67,7 +69,7 @@ export function SignupPage() {
   }
 
   return (
-    <AuthShell footer="Protected by auuth — sessions, rate limits and audit events included.">
+    <AuthShell>
       <Card title="Create your account" subtitle="Sign up in under a minute. No credit card required.">
         {error ? <Alert tone="error">{error}</Alert> : null}
         <form onSubmit={onSubmit} noValidate>
@@ -80,29 +82,28 @@ export function SignupPage() {
             error={fieldErrors.email}
             onChange={(e) => setEmail(e.target.value)}
           />
-          <TextField
+          <PasswordField
             label="Password"
-            type="password"
             autoComplete="new-password"
             placeholder="At least 12 characters"
             value={password}
             error={fieldErrors.password}
             onChange={(e) => setPassword(e.target.value)}
           />
-          <TextField
+          <PasswordField
             label="Confirm password"
-            type="password"
             autoComplete="new-password"
             placeholder="Repeat your password"
             value={confirm}
             error={fieldErrors.confirm}
             onChange={(e) => setConfirm(e.target.value)}
           />
+          <PasswordPolicy password={password} />
           <Button type="submit" block loading={pending}>
             Create account
           </Button>
         </form>
-        <div className="inline-form__row">
+        <div className="flex items-center justify-center gap-2 mt-6 text-text-muted text-[13.5px]">
           <span>
             Already have an account? <Link to="/login">Sign in</Link>
           </span>
