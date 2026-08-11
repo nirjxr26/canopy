@@ -1,10 +1,17 @@
-import { test, expect } from '@playwright/test';
+﻿import { test, expect } from '@playwright/test';
 import { generateTotpCode } from '../../src/infrastructure/crypto/totp.js';
+import {
+  extractTokenFromEmail,
+  waitForOutboxDelivery,
+} from './helpers/email-outbox.js';
 
 test.describe('Automated API MFA Lifecycle (Enroll -> Confirm -> Login Challenge -> Disable)', () => {
+  test.setTimeout(90_000);
+
   const origin = 'http://localhost:5173';
   const email = `mfa-user-${Date.now()}@example.com`;
   const password = 'MfaSecurePassword123!';
+
 
   test('MFA Setup & Challenge verification via API contract', async ({ request }) => {
     // 1. Signup user
@@ -13,18 +20,15 @@ test.describe('Automated API MFA Lifecycle (Enroll -> Confirm -> Login Challenge
       headers: { Origin: origin },
     });
     expect(signupRes.status()).toBe(201);
-    const signupBody = await signupRes.json();
 
-    // Verify email token to activate account
-    if (signupBody.devEmailLink) {
-      const token = new URL(signupBody.devEmailLink).searchParams.get('token');
-      if (token) {
-        await request.post('/api/v1/auth/verify-email', {
-          data: { token },
-          headers: { Origin: origin },
-        });
-      }
-    }
+    // Verify email token from the outbox to activate the account (provider-agnostic)
+    const verifyEmail = await waitForOutboxDelivery(email, 'Verify your email');
+    const verifyToken = extractTokenFromEmail(verifyEmail);
+    const verifyRes = await request.post('/api/v1/auth/verify-email', {
+      data: { token: verifyToken },
+      headers: { Origin: origin },
+    });
+    expect(verifyRes.status()).toBe(200);
 
     // 2. Login to get authenticated session
     const loginRes = await request.post('/api/v1/auth/login', {
@@ -53,7 +57,7 @@ test.describe('Automated API MFA Lifecycle (Enroll -> Confirm -> Login Challenge
     expect(confirmRes.status()).toBe(200);
     const confirmBody = await confirmRes.json();
     expect(confirmBody.recoveryCodes).toBeInstanceOf(Array);
-    expect(confirmBody.recoveryCodes.length).toBe(10);
+    expect(confirmBody.recoveryCodes).toHaveLength(10);
 
     // 5. Logout & Re-login -> Should return 200 with { mfaRequired: true, mfaToken }
     await request.post('/api/v1/auth/logout', { headers: { Origin: origin } });

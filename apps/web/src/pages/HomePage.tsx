@@ -1,4 +1,4 @@
-import { type FormEvent, useState } from "react";
+import { type SubmitEvent, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../lib/auth";
 import { mfaApi } from "../lib/api";
@@ -20,7 +20,7 @@ export function HomePage() {
     return null;
   }
 
-  function onDisable(event: FormEvent) {
+  function onDisable(event: SubmitEvent<HTMLFormElement>) {
     event.preventDefault();
     if (code.trim() === "") {
       setFieldError("Enter the 6-digit code");
@@ -37,7 +37,7 @@ export function HomePage() {
   return (
     <AuthShell footer="Signed in with a server-side session — nothing sensitive is stored in the browser.">
       <>
-        <Card title={`Hi${user.firstName ? ` ${user.firstName}` : ""}`} subtitle="You're signed in.">
+        <Card title={user.firstName ? `Hi ${user.firstName}` : "Hi"} subtitle="You're signed in.">
           {logoutSubmit.error ? <Alert tone="error">{logoutSubmit.error}</Alert> : null}
           <div className="flex flex-col gap-1 mt-4.5">
             <div className="flex items-center justify-between gap-2 mt-3 text-text-muted text-[13.5px]">

@@ -8,7 +8,7 @@ export function Logo() {
   );
 }
 
-export function AuthShell({ children, footer }: { children: ReactNode; footer?: ReactNode }) {
+export function AuthShell({ children, footer }: Readonly<{ children: ReactNode; footer?: ReactNode }>) {
   return (
     <main className="min-h-dvh flex flex-col items-center justify-center p-6 gap-6">
       <div className="flex flex-col items-center gap-2">
@@ -20,7 +20,7 @@ export function AuthShell({ children, footer }: { children: ReactNode; footer?: 
   );
 }
 
-export function Card({ title, subtitle, children }: { title: string; subtitle?: string; children: ReactNode }) {
+export function Card({ title, subtitle, children }: Readonly<{ title: string; subtitle?: string; children: ReactNode }>) {
   return (
     <section className="bg-bg-card border border-border rounded-xl p-7">
       <h1 className="m-0 text-xl font-semibold text-center tracking-tight">{title}</h1>

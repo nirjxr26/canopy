@@ -111,7 +111,7 @@ export const authApi = {
       body: input,
     });
   },
-  login(input: { email: string; password: string }) {
+  login(input: { email: string; password: string; persistent?: boolean }) {
     return api<{ user: User } | { mfaRequired: true; mfaToken: string }>("/api/v1/auth/login", {
       method: "POST",
       body: input,

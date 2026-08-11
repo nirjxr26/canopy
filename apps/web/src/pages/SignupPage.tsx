@@ -1,4 +1,4 @@
-import { type FormEvent, useState } from "react";
+import { type SubmitEvent, useState } from "react";
 import { Link, Navigate, useNavigate } from "react-router-dom";
 import { useAuth } from "../lib/auth";
 import { useSubmit } from "../lib/submit";
@@ -58,7 +58,7 @@ export function SignupPage() {
     return Object.keys(next).length === 0;
   }
 
-  function onSubmit(event: FormEvent) {
+  function onSubmit(event: SubmitEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!validate()) return;
     void run(async () => {

@@ -14,6 +14,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 export function sessionCookieValue(
   config: Pick<Config, "cookieSecure" | "sessionExpiryDays">,
   token: string,
+  persistent: boolean = true,
 ): string {
   const name = sessionCookieName(config.cookieSecure);
   return serializeCookie(name, token, {
@@ -21,7 +22,7 @@ export function sessionCookieValue(
     secure: config.cookieSecure,
     sameSite: "strict",
     path: "/",
-    maxAgeMs: config.sessionExpiryDays * DAY_MS,
+    maxAgeMs: persistent ? config.sessionExpiryDays * DAY_MS : undefined,
   });
 }
 

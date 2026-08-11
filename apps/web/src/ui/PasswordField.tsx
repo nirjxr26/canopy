@@ -6,7 +6,7 @@ interface PasswordFieldProps extends InputHTMLAttributes<HTMLInputElement> {
   hint?: string;
 }
 
-export function PasswordField({ label, error, hint, id, className, ...rest }: PasswordFieldProps) {
+export function PasswordField({ label, error, hint, id, className, ...rest }: Readonly<PasswordFieldProps>) {
   const autoId = useId();
   const inputId = id ?? autoId;
   const toggleId = useId();

@@ -196,6 +196,24 @@ describeDb("auth endpoints", () => {
       expect(setCookie).not.toContain("Domain=");
     });
 
+    it("persists the cookie for sessionExpiryDays by default", async () => {
+      await activeUser("login-3b@example.com");
+      const res = await login(harness.app, "login-3b@example.com");
+      const setCookie = res.headers["set-cookie"][0];
+      expect(setCookie).toMatch(/Max-Age=\d+/);
+    });
+
+    it("omits Max-Age when persistent is false (browser-session cookie)", async () => {
+      await activeUser("login-3c@example.com");
+      const res = await request(harness.app)
+        .post(`${BASE_URL}/login`)
+        .set("Origin", "http://localhost:5173")
+        .send({ email: "login-3c@example.com", password: PASSWORD, persistent: false });
+      expect(res.status).toBe(200);
+      const setCookie = res.headers["set-cookie"][0];
+      expect(setCookie).not.toContain("Max-Age");
+    });
+
     it("issues a fresh session secret on every login (fixation-safe)", async () => {
       await activeUser("login-4@example.com");
       const first = await login(harness.app, "login-4@example.com");
@@ -343,7 +361,7 @@ describeDb("auth endpoints", () => {
       const loginRes = await login(harness.app, "logout-1@example.com");
       const res = await request(harness.app).post(`${BASE_URL}/logout`).set("Cookie", cookieOf(loginRes));
       expect(res.status).toBe(204);
-      expect(res.headers["set-cookie"].join(";")).toContain("Expires=Thu, 01 Jan 1970");
+      expect(Array.isArray(res.headers["set-cookie"]) ? res.headers["set-cookie"].join(";") : res.headers["set-cookie"]).toContain("Expires=Thu, 01 Jan 1970");
       const me = await request(harness.app).get(`${BASE_URL}/me`).set("Cookie", cookieOf(loginRes));
       expect(me.status).toBe(401);
     });

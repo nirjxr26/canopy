@@ -64,42 +64,77 @@ export function assertPasswordPolicy(password: string): void {
   }
 }
 
+async function registerUser(
+  repository: UserRepository,
+  hasher: PasswordHasher,
+  input: RegisterInput,
+): Promise<RegisterResult> {
+  let email: string;
+  try {
+    email = normalizeEmail(input.email);
+  } catch {
+    throw new AppError(ERROR_CODES.VALIDATION, "Invalid email address");
+  }
+  assertPasswordPolicy(input.password);
+  const existing = await repository.findByEmail(email);
+  if (existing !== null) {
+    return { created: false, user: existing };
+  }
+  const passwordHash = await hasher.hash(input.password);
+  const user = {
+    id: createId("usr"),
+    email,
+    passwordHash,
+    firstName: input.firstName?.trim() || undefined,
+    lastName: input.lastName?.trim() || undefined,
+  };
+  try {
+    const inserted = await repository.insert(user);
+    return { created: true, user: inserted };
+  } catch (err) {
+    if (isUniqueViolation(err, "users_email_key")) {
+      const winner = await repository.findByEmail(email, true);
+      return { created: false, user: winner };
+    }
+    throw err;
+  }
+}
+
+async function verifyUserEmail(
+  repository: UserRepository,
+  id: string,
+  now = new Date(),
+): Promise<void> {
+  const user = await repository.findById(id);
+  if (!user) {
+    return;
+  }
+  if (user.status === "ACTIVE" && user.emailVerifiedAt !== null) {
+    return;
+  }
+  assertTransition(user.status, "ACTIVE");
+  const updated = await repository.updateStatusIf(id, "PENDING_VERIFICATION", "ACTIVE", {
+    emailVerifiedAt: now,
+    updatedAt: now,
+  });
+  if (!updated) {
+    const fresh = await repository.findById(id);
+    if (!fresh) {
+      return;
+    }
+    if (fresh.emailVerifiedAt !== null) {
+      return;
+    }
+    throw new AppError(ERROR_CODES.CONFLICT, "Account state changed while verifying email");
+  }
+}
+
 export function createUserService(
   repository: UserRepository,
   hasher: PasswordHasher,
 ): UserService {
   return {
-    async register(input) {
-      let email: string;
-      try {
-        email = normalizeEmail(input.email);
-      } catch {
-        throw new AppError(ERROR_CODES.VALIDATION, "Invalid email address");
-      }
-      assertPasswordPolicy(input.password);
-      const existing = await repository.findByEmail(email);
-      if (existing !== null) {
-        return { created: false, user: existing };
-      }
-      const passwordHash = await hasher.hash(input.password);
-      const user = {
-        id: createId("usr"),
-        email,
-        passwordHash,
-        firstName: input.firstName?.trim() || undefined,
-        lastName: input.lastName?.trim() || undefined,
-      };
-      try {
-        const inserted = await repository.insert(user);
-        return { created: true, user: inserted };
-      } catch (err) {
-        if (isUniqueViolation(err, "users_email_key")) {
-          const winner = await repository.findByEmail(email, true);
-          return { created: false, user: winner };
-        }
-        throw err;
-      }
-    },
+    register: (input) => registerUser(repository, hasher, input),
 
     findByEmail(email) {
       return repository.findByEmail(normalizeEmail(email));
@@ -109,30 +144,7 @@ export function createUserService(
       return repository.findById(id);
     },
 
-    async verifyEmail(id, now = new Date()) {
-      const user = await repository.findById(id);
-      if (!user) {
-        return;
-      }
-      if (user.status === "ACTIVE" && user.emailVerifiedAt !== null) {
-        return;
-      }
-      assertTransition(user.status, "ACTIVE");
-      const updated = await repository.updateStatusIf(id, "PENDING_VERIFICATION", "ACTIVE", {
-        emailVerifiedAt: now,
-        updatedAt: now,
-      });
-      if (!updated) {
-        const fresh = await repository.findById(id);
-        if (!fresh) {
-          return;
-        }
-        if (fresh.emailVerifiedAt !== null) {
-          return;
-        }
-        throw new AppError(ERROR_CODES.CONFLICT, "Account state changed while verifying email");
-      }
-    },
+    verifyEmail: (id, now = new Date()) => verifyUserEmail(repository, id, now),
 
     async recordLogin(id, now = new Date()) {
       const updated = await repository.update(id, { lastLoginAt: now, updatedAt: now });
