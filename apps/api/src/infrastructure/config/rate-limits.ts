@@ -15,6 +15,7 @@ export const DEFAULT_RATE_LIMITS = {
   changePassword: { limit: 5, windowMs: 900_000 },
   introspect: { limit: 600, windowMs: 60_000 },
   tokens: { limit: 10, windowMs: 60_000 },
+  jwks: { limit: 600, windowMs: 60_000 },
   me: { limit: 60, windowMs: 60_000 },
   sessionsList: { limit: 30, windowMs: 60_000 },
   sessionRevoke: { limit: 30, windowMs: 60_000 },

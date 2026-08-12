@@ -1,7 +1,7 @@
-﻿import { test, expect } from '@playwright/test';
+import { test, expect } from '@playwright/test';
 import {
   extractTokenFromEmail,
-  waitForOutboxDelivery,
+  waitForOutboxRow,
 } from './helpers/email-outbox.js';
 
 test.describe('Automated API Identity Flow (Signup -> Verify -> Login -> Session -> Logout)', () => {
@@ -29,8 +29,8 @@ test.describe('Automated API Identity Flow (Signup -> Verify -> Login -> Session
     expect(signupBody.user.email).toBe(testEmail);
     expect(signupBody.user.status).toBe('PENDING_VERIFICATION');
 
-    // Extract verification token from the email outbox (works in console AND smtp mode)
-    const verifyEmail = await waitForOutboxDelivery(testEmail, 'Verify your email');
+    // Extract verification token directly from transactional email outbox table
+    const verifyEmail = await waitForOutboxRow(testEmail, 'Verify your email');
     const verifyToken = extractTokenFromEmail(verifyEmail);
     const verifyRes = await request.post('/api/v1/auth/verify-email', {
       data: { token: verifyToken },

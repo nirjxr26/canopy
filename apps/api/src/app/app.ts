@@ -20,6 +20,7 @@ import { createHealthRouter } from "./routes/health.js";
 import { createAuthRouter } from "./routes/auth.js";
 import { createRecoveryRouter } from "./routes/recovery.js";
 import { createMfaRouter } from "./routes/mfa.js";
+import { createTokensRouter } from "./routes/tokens.js";
 import { createSessionsRouter, createSessionsAllRouter } from "./routes/sessions.js";
 
 export interface AppDeps {
@@ -67,6 +68,21 @@ export function createApp(deps: AppDeps): express.Express {
   );
   app.use(express.json({ limit: "256kb" }));
   app.use(createOriginCheck(config.allowedOrigins));
+
+  app.use(
+    "/api/v1/auth/tokens",
+    createTokensRouter({ config }),
+  );
+
+  /** GET / - JWKS endpoint (conventional /jwks.json) */
+  app.get("/.well-known/jwks.json", async (_req, res, next) => {
+    try {
+      const jwk = await (await import("../modules/jwt/jwt-service.js")).exportJwk(config);
+      res.type("json").send(jwk);
+    } catch (err) {
+      next(err);
+    }
+  });
 
   app.use("/", createHealthRouter(db));
   app.use(

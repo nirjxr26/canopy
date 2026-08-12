@@ -7,6 +7,10 @@ import type { SessionRecord, SessionRepository } from "./session-repository.js";
 export const SESSION_TOKEN_BYTES = 32;
 export const TOUCH_THROTTLE_MS = 60_000;
 
+function sha256(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
 export function sessionCookieName(cookieSecure: boolean): string {
   return cookieSecure ? "__Host-ap_session" : "ap_session";
 }
@@ -35,6 +39,7 @@ export interface SessionService {
   revokeAll(userId: string): Promise<number>;
   revokeAllExcept(userId: string, keepId: string): Promise<number>;
   listByUser(userId: string, currentSessionId: string): Promise<SessionListItem[]>;
+  findBySecret(secret: string, now?: number): Promise<SessionRecord | null>;
 }
 
 export function createSessionService(
@@ -42,10 +47,6 @@ export function createSessionService(
   getUsers: { getById(id: string): Promise<UserRecord | null> },
   config: Pick<Config, "sessionExpiryDays">,
 ): SessionService {
-  function sha256(value: string): string {
-    return createHash("sha256").update(value).digest("hex");
-  }
-
   return {
     async createSession({ userId, ipAddress, userAgent, now }) {
       const token = randomBytes(SESSION_TOKEN_BYTES).toString("base64url");
@@ -73,7 +74,7 @@ export function createSessionService(
         return null;
       }
       const user = await getUsers.getById(session.userId);
-      if (!user || user.status !== "ACTIVE") {
+      if (user?.status !== "ACTIVE") {
         return null;
       }
       if (touch && now - session.lastUsedAt.getTime() >= TOUCH_THROTTLE_MS) {
@@ -100,6 +101,14 @@ export function createSessionService(
         ...session,
         isCurrent: session.id === currentSessionId,
       }));
+    },
+
+    async findBySecret(secret, now = Date.now()) {
+      if (!secret) return null;
+      const session = await sessions.findByHash(sha256(secret));
+      if (session?.revokedAt !== null) return null;
+      if (session.expiresAt.getTime() <= now) return null;
+      return session;
     },
   };
 }
