@@ -1,0 +1,265 @@
+openapi: "3.1.0"
+info:
+  title: auuth Authentication API
+  description: Authentication API for the auuth platform (v1)
+  version: "1.0.0"
+  contact:
+    name: auuth API
+  license:
+    name: MIT
+
+servers:
+  - url: http://localhost:3000/api/v1
+    description: Local development server
+
+paths:
+  /api/v1/auth/tokens:
+    post:
+      summary: Mint RS256 JWT (service-key authenticated)
+      operationId: mintJwt
+      x-rate-limit:
+        name: tokens
+        limit: 10
+        windowMs: 60000
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                # authenticated via X-Service-Key header (no body required)
+      responses:
+        "200":
+          description: JWT minted successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  accessToken:
+                    type: string
+                    description: Signed JWT
+                  expiresIn:
+                    type: integer
+                    description: Seconds until expiration
+                  tokenType:
+                    type: string
+                    enum: ["Bearer"]
+                    default: "Bearer"
+                  expiresAt:
+                    type: string
+                    format: date-time
+                    description: ISO-8601 expiration timestamp
+        "401":
+          description: Invalid service key
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                      message:
+                        type: string
+  /.well-known/jwks.json:
+    get:
+      summary: Retrieve JWKS (JSON Web Key Set)
+      operationId: getJwks
+      responses:
+        "200":
+          description: JWKS document
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  kty:
+                    type: string
+                    enum: ["RSA"]
+                  use:
+                    type: string
+                    enum: ["sig"]
+                  alg:
+                    type: string
+                    enum: ["RS256"]
+                  kid:
+                    type: string
+                  n:
+                    type: string
+                    description: Modulus (base64url)
+                  e:
+                    type: string
+                    description: Exponent (base64url)
+        "default":
+          description: JWKS not available
+  health:
+    get:
+      summary: Health check
+      operationId: healthCheck
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: ["ok"]
+  /api/v1/auth/me:
+    get:
+      summary: Get current user profile
+      operationId: getMe
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: User profile
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                      email:
+                        type: string
+                      emailVerified:
+                        type: boolean
+                      status:
+                        type: string
+  components:
+    securitySchemes:
+      bearerAuth:
+        type: http
+        scheme: bearer
+        bearerFormat: JWT
+      serviceKey:
+        type: http
+        scheme: bearer
+        bearerFormat: API-Key
+    schemas:
+      Error:
+        type: object
+        properties:
+          error:
+            type: object
+            properties:
+              code:
+                type: string
+              message:
+                type: string
+      User:
+        type: object
+        properties:
+          id:
+            type: string
+          email:
+            type: string
+          emailVerified:
+            type: boolean
+          status:
+            type: string
+      Jwks:
+        type: object
+        properties:
+          kty:
+            type: string
+            enum: ["RSA"]
+          use:
+            type: string
+            enum: ["sig"]
+          alg:
+            type: string
+            enum: ["RS256"]
+          kid:
+            type: string
+          n:
+            type: string
+          e:
+            type: string
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+    serviceKey:
+      type: http
+      scheme: bearer
+      bearerFormat: API-Key
+schemas:
+  Error:
+    type: object
+    properties:
+      error:
+        type: object
+        properties:
+          code:
+            type: string
+            description: Error code (e.g. UNAUTHENTICATED, RATE_LIMITED)
+          message:
+            type: string
+            description: Human-readable message
+  User:
+    type: object
+    required: [id, email, status]
+    properties:
+      id:
+        type: string
+        description: User ULID (usr_...)
+      email:
+        type: string
+        format: email
+      emailVerified:
+        type: boolean
+        description: Whether email has been verified
+      status:
+        type: string
+        enum: [PENDING_VERIFICATION, ACTIVE, LOCKED, DELETED]
+      lastLoginAt:
+        type: string
+        format: date-time
+        description: ISO-8601 timestamp
+      createdAt:
+        type: string
+        format: date-time
+  Jwks:
+    type: object
+    properties:
+      kty:
+        type: string
+        description: Key type (RSA)
+      use:
+        type: string
+        description: Key use (sig)
+      alg:
+        type: string
+        description: Algorithm (RS256)
+      kid:
+        type: string
+        description: Key ID
+      n:
+        type: string
+        description: Modulus (base64url)
+      e:
+        type: string
+        description: Exponent (base64url)
+x-rate-limit:
+  type: object
+  properties:
+    name:
+      type: string
+    limit:
+      type: integer
+    windowMs:
+      type: integer

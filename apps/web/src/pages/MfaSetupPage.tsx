@@ -35,17 +35,24 @@ export function MfaSetupPage() {
   const [code, setCode] = useState("");
   const [fieldError, setFieldError] = useState<string | null>(null);
   const [recoveryCodes, setRecoveryCodes] = useState<string[] | null>(null);
+  const [copiedSecret, setCopiedSecret] = useState(false);
+  const [copiedCodes, setCopiedCodes] = useState(false);
   const started = useRef(false);
 
   async function doEnroll() {
-    const result = await mfaApi.enroll();
-    setSecret(result.secret);
-    const dataUrl = await QRCode.toDataURL(result.otpauthUrl, {
-      width: 220,
-      margin: 1,
-      color: { dark: "#141414", light: "#FFFFFF" },
-    });
-    setQrDataUrl(dataUrl);
+    try {
+      const result = await mfaApi.enroll();
+      setSecret(result.secret);
+      const dataUrl = await QRCode.toDataURL(result.otpauthUrl, {
+        width: 220,
+        margin: 2,
+        color: { dark: "#000000", light: "#FFFFFF" },
+      });
+      setQrDataUrl(dataUrl);
+    } catch (err) {
+      console.error("Failed to generate MFA QR code:", err);
+      throw err;
+    }
   }
 
   useEffect(() => {
@@ -55,11 +62,19 @@ export function MfaSetupPage() {
   }, [enrollRun]);
 
   function copySecret() {
-    if (secret !== null) void navigator.clipboard.writeText(secret);
+    if (secret !== null) {
+      void navigator.clipboard.writeText(secret);
+      setCopiedSecret(true);
+      setTimeout(() => setCopiedSecret(false), 2000);
+    }
   }
 
   function copyCodes() {
-    if (recoveryCodes !== null) void navigator.clipboard.writeText(recoveryCodes.join("\n"));
+    if (recoveryCodes !== null) {
+      void navigator.clipboard.writeText(recoveryCodes.join("\n"));
+      setCopiedCodes(true);
+      setTimeout(() => setCopiedCodes(false), 2000);
+    }
   }
 
   function onConfirm(event: SubmitEvent<HTMLFormElement>) {
@@ -108,7 +123,9 @@ export function MfaSetupPage() {
     }
     return (
       <>
-        <img className="block w-[220px] h-[220px] mx-auto mb-5 rounded-md border border-border" src={qrDataUrl} alt="QR code for authenticator app" />
+        <div className="bg-white p-2.5 rounded-lg w-[220px] h-[220px] mx-auto mb-5 flex items-center justify-center border border-border">
+          <img className="block w-full h-full object-contain" src={qrDataUrl} alt="QR code for authenticator app" />
+        </div>
         <p className="text-[12.5px] text-text-faint mb-3">
           Open your authenticator app, tap &quot;Add account&quot;, and scan the QR code
           below. Can&apos;t scan it? Enter the secret manually.
@@ -120,7 +137,7 @@ export function MfaSetupPage() {
               {secret}
             </code>
             <Button variant="ghost" onClick={copySecret}>
-              Copy
+              {copiedSecret ? "✓ Copied" : "Copy"}
             </Button>
           </div>
         </div>
@@ -178,7 +195,7 @@ export function MfaSetupPage() {
         </div>
         <div className="flex gap-2.5 mb-3">
           <Button variant="ghost" onClick={copyCodes}>
-            Copy codes
+            {copiedCodes ? "✓ Copied" : "Copy codes"}
           </Button>
         </div>
         <Button block onClick={() => navigate("/")}>

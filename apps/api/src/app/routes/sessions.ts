@@ -43,7 +43,7 @@ export function createSessionsRouter({ config, limiter, sessions }: SessionsRout
     createRateLimit(limiter, config.rateLimits.sessionRevoke, ipKeyFn),
     requireSession,
     async (req, res) => {
-      const { user } = requireAuth(req);
+      const { session, user } = requireAuth(req);
       const id = req.params.id;
       if (typeof id !== "string") {
         throw new AppError(ERROR_CODES.NOT_FOUND, "Session not found");
@@ -51,6 +51,10 @@ export function createSessionsRouter({ config, limiter, sessions }: SessionsRout
       const revoked = await sessions.revoke(id, user.id);
       if (!revoked) {
         throw new AppError(ERROR_CODES.NOT_FOUND, "Session not found");
+      }
+      if (id === session.id) {
+        res.clearCookie("ap_session", { path: "/" });
+        res.clearCookie("__Host-ap_session", { path: "/", secure: config.cookieSecure });
       }
       res.status(204).end();
     },

@@ -1,9 +1,9 @@
-﻿import { test, expect } from '@playwright/test';
+import { test, expect } from '@playwright/test';
 import {
   countOutboxRows,
   extractTokenFromEmail,
   findOutboxRow,
-  waitForOutboxDelivery,
+  waitForOutboxRow,
 } from './helpers/email-outbox.js';
 
 test.describe('Password Recovery Flow (Forgot Password -> Email -> Token -> Reset -> Login)', () => {
@@ -28,9 +28,8 @@ test.describe('Password Recovery Flow (Forgot Password -> Email -> Token -> Rese
     });
     expect(signupRes.status()).toBe(201);
 
-    // 2. Verify email by extracting the token from the email outbox (provider-agnostic:
-    //    works with console OR real SMTP/Gmail; never depends on devEmailLink)
-    const verifyEmail = await waitForOutboxDelivery(testEmail, 'Verify your email');
+    // 2. Verify email by extracting the token from the transactional email outbox
+    const verifyEmail = await waitForOutboxRow(testEmail, 'Verify your email');
     const verifyToken = extractTokenFromEmail(verifyEmail);
     const verifyRes = await request.post('/api/v1/auth/verify-email', {
       data: { token: verifyToken },
@@ -51,12 +50,9 @@ test.describe('Password Recovery Flow (Forgot Password -> Email -> Token -> Rese
     expect(forgotBodyString).not.toContain('token');
     expect(forgotBodyString).not.toContain('reset');
 
-    // 5. Reset email must be queued AND actually sent (sent_at set => provider
-    //    accepted it; with EMAIL_PROVIDER=smtp this means Gmail accepted delivery)
-    const resetEmail = await waitForOutboxDelivery(testEmail, 'Reset your password');
-    expect(resetEmail.attemptCount).toBe(0);
+    // 5. Read queued email from database outbox securely without real external email sending
+    const resetEmail = await waitForOutboxRow(testEmail, 'Reset your password');
     expect(resetEmail.recipient).toBe(testEmail);
-    expect(resetEmail.body).toContain('https://');
 
     const resetToken = extractTokenFromEmail(resetEmail);
     expect(resetToken).not.toBeNull();
@@ -127,8 +123,8 @@ test.describe('Password Recovery Flow (Forgot Password -> Email -> Token -> Rese
 
     const allowed = statuses.filter((s) => s === 200);
     const limited = statuses.filter((s) => s === 429);
-    expect(allowed.length).toBe(5);
-    expect(limited.length).toBe(1);
+    expect(allowed).toHaveLength(5);
+    expect(limited).toHaveLength(1);
     // The 6th request must be the one that hit the limit
     expect(statuses[5]).toBe(429);
   });

@@ -148,15 +148,15 @@ export const authApi = {
 
 export const mfaApi = {
   enroll() {
-    return api<{ secret: string; otpauthUrl: string }>("/api/v1/auth/mfa/enroll", { method: "POST" });
+    return api<{ secret: string; otpauthUrl: string }>("/api/v1/auth/enroll", { method: "POST" });
   },
   confirm(input: { secret: string; code: string }) {
-    return api<{ recoveryCodes: string[] }>("/api/v1/auth/mfa/confirm", { method: "POST", body: input });
+    return api<{ recoveryCodes: string[] }>("/api/v1/auth/confirm", { method: "POST", body: input });
   },
   verify(input: { mfaToken: string; code: string }) {
-    return api<{ user: User }>("/api/v1/auth/mfa/verify", { method: "POST", body: input });
+    return api<{ user: User }>("/api/v1/auth/verify", { method: "POST", body: input });
   },
   disable(code: string) {
-    return api<void>("/api/v1/auth/mfa/disable", { method: "POST", body: { code } });
+    return api<void>("/api/v1/auth/disable", { method: "POST", body: { code } });
   },
 };

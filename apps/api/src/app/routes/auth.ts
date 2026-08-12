@@ -179,5 +179,43 @@ const valid = await hasher.verify(account.passwordHash, password);
     },
   );
 
+  router.post(
+    "/introspect",
+    createRateLimit(limiter, config.rateLimits.introspect, ipKeyFn),
+    async (req, res, next) => {
+      try {
+        const serviceKey = req.header("X-Service-Key");
+        if (!config.serviceApiKey || serviceKey !== config.serviceApiKey) {
+          throw new AppError(ERROR_CODES.UNAUTHENTICATED, "Invalid service key");
+        }
+        const body = req.body ?? {};
+        const secret = typeof body.sessionSecret === "string" ? body.sessionSecret : "";
+        if (!secret) {
+          res.status(200).json({ valid: false });
+          return;
+        }
+        const session = await sessions.findBySecret(secret);
+        if (session === null) {
+          res.status(200).json({ valid: false });
+          return;
+        }
+        const user = await users.getById(session.userId);
+        if (user === null || user.status === "DEACTIVATED" || user.status === "SUSPENDED") {
+          res.status(200).json({ valid: false });
+          return;
+        }
+        res.status(200).json({
+          valid: true,
+          userId: user.id,
+          email: user.email,
+          emailVerified: user.emailVerifiedAt !== null,
+          expiresAt: session.expiresAt.toISOString(),
+        });
+      } catch (err) {
+        next(err);
+      }
+    },
+  );
+
   return router;
 }
