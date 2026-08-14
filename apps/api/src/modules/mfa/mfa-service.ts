@@ -1,25 +1,28 @@
 import { createHash } from "node:crypto";
 import type { EncryptionKeyEntry } from "../../infrastructure/config/config.js";
-import {
-  decryptSecret,
-  encryptSecret,
-  rotateSecretIfNeeded,
-} from "../../infrastructure/crypto/cipher.js";
+import { decryptSecret, encryptSecret, rotateSecretIfNeeded } from "../../infrastructure/crypto/cipher.js";
 import {
   generateRecoveryCodes,
   generateSecret,
   otpauthUrl,
   verifyTotp,
 } from "../../infrastructure/crypto/totp.js";
+import type { DbExecutor } from "../../infrastructure/db/database.js";
 import { AppError, ERROR_CODES } from "../../shared/app-error.js";
+import { createTokenRepository } from "../identity/token-repository.js";
+import { createTokenService } from "../identity/token-service.js";
+import type { TokenService } from "../identity/token-service.js";
+import { createMfaRepository } from "./mfa-repository.js";
 import type { MfaRepository } from "./mfa-repository.js";
 
 export interface MfaService {
   isEnabled(userId: string): Promise<boolean>;
-  enroll(user: { id: string; email: string }): Promise<{ secret: string; otpauthUrl: string }>;
+  enroll(
+    user: { id: string; email: string },
+  ): Promise<{ challenge: string; secret: string; otpauthUrl: string }>;
   confirm(
     user: { id: string; email: string },
-    secret: string,
+    challenge: string,
     code: string,
   ): Promise<{ recoveryCodes: string[] }>;
   verifyCode(userId: string, code: string): Promise<boolean>;
@@ -27,41 +30,74 @@ export interface MfaService {
   consumeRecoveryCode(userId: string, code: string): Promise<boolean>;
 }
 
+function sha256(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
 export function createMfaService(deps: {
   repository: MfaRepository;
+  tokens: TokenService;
+  db: DbExecutor;
   keys: readonly EncryptionKeyEntry[];
   issuer: string;
 }): MfaService {
-  const { repository, keys, issuer } = deps;
-
-  function sha256(value: string): string {
-    return createHash("sha256").update(value).digest("hex");
-  }
+  const { repository, tokens, db, keys, issuer } = deps;
 
   async function isEnabled(userId: string): Promise<boolean> {
     return (await repository.findEnabledByUser(userId)) !== null;
   }
 
-  async function enroll(user: { id: string; email: string }): Promise<{ secret: string; otpauthUrl: string }> {
+  async function enroll(
+    user: { id: string; email: string },
+  ): Promise<{ challenge: string; secret: string; otpauthUrl: string }> {
     const secret = generateSecret();
-    return { secret, otpauthUrl: otpauthUrl(secret, user.email, issuer) };
+    const { encrypted, keyVersion } = encryptSecret(secret, keys);
+    const challenge = await tokens.issue("MFA_ENROLL", user.id, {
+      secretEncrypted: encrypted,
+      keyVersion,
+    });
+    return { challenge, secret, otpauthUrl: otpauthUrl(secret, user.email, issuer) };
   }
 
   async function confirm(
     user: { id: string; email: string },
-    secret: string,
+    challenge: string,
     code: string,
   ): Promise<{ recoveryCodes: string[] }> {
     if (await isEnabled(user.id)) {
       throw new AppError(ERROR_CODES.CONFLICT, "MFA is already enabled");
     }
+    const pending = await tokens.findByHash("MFA_ENROLL", challenge);
+    if (pending?.userId !== user.id) {
+      throw new AppError(ERROR_CODES.TOKEN_INVALID, "Enrollment session expired — start over");
+    }
+    const secretEncrypted = pending.metadata.secretEncrypted;
+    const keyVersion = pending.metadata.keyVersion;
+    if (typeof secretEncrypted !== "string" || typeof keyVersion !== "number") {
+      throw new AppError(ERROR_CODES.TOKEN_INVALID, "Enrollment session expired — start over");
+    }
+    const secret = decryptSecret(secretEncrypted, keys);
     if (!verifyTotp(secret, code)) {
       throw new AppError(ERROR_CODES.MFA_INVALID, "Invalid code");
     }
-    const { encrypted, keyVersion } = encryptSecret(secret, keys);
-    await repository.insertCredential({ userId: user.id, method: "totp", secretEncrypted: encrypted, keyVersion });
     const recoveryCodes = generateRecoveryCodes();
-    await repository.insertRecoveryCodes(user.id, recoveryCodes.map(sha256));
+    await db.transaction().execute(async (tx) => {
+      const repo = createMfaRepository(tx);
+      await repo.insertCredential({
+        userId: user.id,
+        method: "totp",
+        secretEncrypted,
+        keyVersion,
+      });
+      await repo.insertRecoveryCodes(user.id, recoveryCodes.map(sha256));
+      const consumedUserId = await createTokenService(createTokenRepository(tx)).consume(
+        "MFA_ENROLL",
+        challenge,
+      );
+      if (consumedUserId === null) {
+        throw new AppError(ERROR_CODES.TOKEN_INVALID, "Enrollment session expired — start over");
+      }
+    });
     return { recoveryCodes };
   }
 
@@ -85,8 +121,11 @@ export function createMfaService(deps: {
     if (!(await verifyCode(userId, code))) {
       throw new AppError(ERROR_CODES.MFA_INVALID, "Invalid code");
     }
-    await repository.deleteRecoveryCodes(userId);
-    await repository.deleteByUser(userId);
+    await db.transaction().execute(async (tx) => {
+      const repo = createMfaRepository(tx);
+      await repo.deleteRecoveryCodes(userId);
+      await repo.deleteByUser(userId);
+    });
   }
 
   async function consumeRecoveryCode(userId: string, code: string): Promise<boolean> {

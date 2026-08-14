@@ -1,7 +1,8 @@
 import type { Kysely } from "kysely";
-import type { Database } from "../../infrastructure/db/database.js";
+import { sql } from "kysely";
+import type { Database, DbExecutor } from "../../infrastructure/db/database.js";
 
-export type TokenKind = "EMAIL_VERIFICATION" | "PASSWORD_RESET" | "MFA_PENDING";
+export type TokenKind = "EMAIL_VERIFICATION" | "PASSWORD_RESET" | "MFA_PENDING" | "MFA_ENROLL";
 
 export interface NewToken {
   id: string;
@@ -23,10 +24,11 @@ export interface TokenRepository {
   consumeByHash(kind: TokenKind, tokenHash: string, now: Date): Promise<string | null>;
   findByHash(kind: TokenKind, tokenHash: string, now: Date): Promise<PendingToken | null>;
   updateMetadata(id: string, patch: Record<string, unknown>): Promise<boolean>;
+  incrementMfaFailures(id: string): Promise<number | null>;
   markUsed(id: string, now: Date): Promise<void>;
 }
 
-export function createTokenRepository(db: Kysely<Database>): TokenRepository {
+export function createTokenRepository(db: Kysely<Database> | DbExecutor): TokenRepository {
   return {
     async insert(token) {
       await db
@@ -78,6 +80,17 @@ export function createTokenRepository(db: Kysely<Database>): TokenRepository {
         .returning("id")
         .execute();
       return rows.length > 0;
+    },
+
+    async incrementMfaFailures(id) {
+      const rows = await db
+        .updateTable("tokens")
+        .set({ mfa_failed_attempts: sql`mfa_failed_attempts + 1` })
+        .where("id", "=", id)
+        .where("used_at", "is", null)
+        .returning("mfa_failed_attempts")
+        .execute();
+      return rows.length > 0 ? rows[0]!.mfa_failed_attempts : null;
     },
 
     async markUsed(id, now) {

@@ -1,5 +1,5 @@
 import type { Kysely, Selectable } from "kysely";
-import type { Database, SessionsTable } from "../../infrastructure/db/database.js";
+import type { Database, DbExecutor, SessionsTable } from "../../infrastructure/db/database.js";
 
 type SessionRow = Selectable<SessionsTable>;
 
@@ -46,7 +46,7 @@ function toSessionRecord(row: SessionRow): SessionRecord {
   };
 }
 
-export function createSessionRepository(db: Kysely<Database>): SessionRepository {
+export function createSessionRepository(db: Kysely<Database> | DbExecutor): SessionRepository {
   return {
     async insert(session) {
       const row = await db

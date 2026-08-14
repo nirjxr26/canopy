@@ -1,5 +1,19 @@
+import { createPublicKey } from "node:crypto";
 import type { Config } from "../../infrastructure/config/config.js";
 import * as jose from "jose";
+
+const JWK_PRIVATE_PARAMS = ["d", "p", "q", "dp", "dq", "qi", "oth"] as const;
+
+// Public JWK shape only; used to derive a public key from the private JWK.
+interface RsaPublicJwk {
+  kty: string;
+  n?: string;
+  e?: string;
+}
+
+export interface JwksDocument {
+  keys: Record<string, unknown>[];
+}
 
 export interface JwtPayload {
   sub: string;
@@ -17,7 +31,7 @@ export async function makeJwtKey(config: Pick<Config, "jwtPrivateKey" | "jwtKid"
   if (!config.jwtPrivateKey) {
     throw new Error("JWT private key not configured");
   }
-  return jose.importPKCS8(config.jwtPrivateKey, "RS256");
+  return jose.importPKCS8(config.jwtPrivateKey, "RS256", { extractable: true });
 }
 
 export async function mintJwt(
@@ -35,13 +49,24 @@ export async function mintJwt(
     .sign(key);
 }
 
-export async function exportJwk(config: Pick<Config, "jwtPrivateKey" | "jwtKid">): Promise<Record<string, unknown>> {
+export async function buildJwks(config: Pick<Config, "jwtPrivateKey" | "jwtKid">): Promise<JwksDocument> {
   const key = await makeJwtKey(config);
-  const jwk = await jose.exportJWK(key);
+  const privateJwk = await jose.exportJWK(key);
+  const publicKey = createPublicKey({ key: privateJwk as RsaPublicJwk, format: "jwk" });
+  const jwk = await jose.exportJWK(publicKey);
+  for (const param of JWK_PRIVATE_PARAMS) {
+    if (param in jwk) {
+      throw new Error(`JWKS export must never contain the private parameter "${param}"`);
+    }
+  }
   return {
-    ...jwk,
-    kid: config.jwtKid ?? "",
-    alg: "RS256",
-    use: "sig",
+    keys: [
+      {
+        ...jwk,
+        kid: config.jwtKid ?? "",
+        alg: "RS256",
+        use: "sig",
+      },
+    ],
   };
 }

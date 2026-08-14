@@ -11,7 +11,10 @@
     "db": "tsx scripts/query-db.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "test:contract:serve": "set \"PORT=3001\" && set \"DATABASE_URL=postgres://postgres:postgres@localhost:5432/auuth_test\" && set \"EMAIL_PROVIDER=console\" && set \"SERVICE_API_KEY=contract-test-service-key\" && set \"RATE_LIMITS_JSON={\"signup\":{\"limit\":100000,\"windowMs\":60000},\"loginIp\":{\"limit\":100000,\"windowMs\":60000},\"loginFailed\":{\"limit\":100000,\"windowMs\":60000},\"verifyEmail\":{\"limit\":100000,\"windowMs\":60000},\"resendVerification\":{\"limit\":100000,\"windowMs\":60000},\"forgotPassword\":{\"limit\":100000,\"windowMs\":60000},\"resetPassword\":{\"limit\":100000,\"windowMs\":60000},\"mfaVerify\":{\"limit\":100000,\"windowMs\":60000},\"mfaEnroll\":{\"limit\":100000,\"windowMs\":60000},\"mfaDisable\":{\"limit\":100000,\"windowMs\":60000},\"tokens\":{\"limit\":100000,\"windowMs\":60000},\"introspect\":{\"limit\":100000,\"windowMs\":60000},\"me\":{\"limit\":100000,\"windowMs\":60000},\"sessionsList\":{\"limit\":100000,\"windowMs\":60000},\"sessionRevoke\":{\"limit\":100000,\"windowMs\":60000},\"sessionsAll\":{\"limit\":100000,\"windowMs\":60000},\"logout\":{\"limit\":100000,\"windowMs\":60000},\"changePassword\":{\"limit\":100000,\"windowMs\":60000},\"jwks\":{\"limit\":100000,\"windowMs\":60000}}\" && npx tsx src/app/bootstrap.ts",
+    "test:contract": "schemathesis run openapi.yaml --url http://localhost:3001 --max-examples 25 -H \"Origin: http://localhost:5173\" -H \"X-Service-Key: contract-test-service-key\" --exclude-checks unsupported_method,positive_data_acceptance,negative_data_rejection --warnings missing_test_data,missing_deserializer,unused_openapi_auth,unsupported_regex,method_not_allowed,constants_extraction",
+    "test:zap": "docker run --rm -t -v \"%CD%/test-results:/zap/wrk\" ghcr.io/zaproxy/zaproxy:stable zap-baseline.py -t http://host.docker.internal:3000 -r zap-baseline.html -J zap-baseline.xml"
   },
   "dependencies": {
     "argon2": "^0.45.1",

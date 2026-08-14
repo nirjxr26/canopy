@@ -1,10 +1,14 @@
 import type pino from "pino";
 import nodemailer from "nodemailer";
 import type { Config } from "../../infrastructure/config/config.js";
+import { decryptSecret, encryptSecret } from "../../infrastructure/crypto/cipher.js";
+import type { EncryptionKeyEntry } from "../../infrastructure/config/config.js";
+import { createId } from "../../infrastructure/crypto/ulid.js";
 import type { OutboxRepository } from "./outbox-repository.js";
 
 export const OUTBOX_POLL_MS = 15_000;
 const OUTBOX_BATCH_SIZE = 100;
+export const EMAIL_LEASE_MS = 5 * 60_000;
 
 export interface EmailMessage {
   from: string;
@@ -124,8 +128,11 @@ export function createEmailService(deps: {
   outbox: OutboxRepository;
   provider: EmailProvider;
   config: Pick<Config, "emailFrom" | "frontendUrl" | "emailRetryMax" | "emailRetryBackoffMs">;
+  keys: readonly EncryptionKeyEntry[];
+  logger: pino.Logger;
 }): EmailService {
-  const { outbox, provider, config } = deps;
+  const { outbox, provider, config, keys, logger } = deps;
+  const workerId = createId("wk");
 
   function buildMessage(kind: EmailKind, recipient: string, token: string): {
     message: EmailMessage;
@@ -158,32 +165,67 @@ export function createEmailService(deps: {
   return {
     async queue(kind, recipient, token) {
       const { message, url } = buildMessage(kind, recipient, token);
+      const sealed = encryptSecret(JSON.stringify({ text: message.body, html: message.html }), keys);
+      const sealedUrl = encryptSecret(url, keys);
       await outbox.insert({
         recipient: message.to,
         subject: message.subject,
-        body: message.body,
-        htmlBody: message.html ?? null,
+        body: sealed.encrypted,
+        htmlBody: null,
+        tokenRef: sealedUrl.encrypted,
+        messageId: createId("eml"),
       });
       return { devLink: provider.kind === "console" ? url : null };
     },
 
     async processDueEmails(now = new Date()) {
-      const due = await outbox.pickDue(now, config.emailRetryMax, OUTBOX_BATCH_SIZE);
+      const due = await outbox.claim(
+        now,
+        config.emailRetryMax,
+        OUTBOX_BATCH_SIZE,
+        EMAIL_LEASE_MS,
+        workerId,
+      );
       let sent = 0;
       for (const message of due) {
         try {
+          let body = message.body;
+          let html = message.htmlBody ?? undefined;
+          if (message.tokenRef !== null) {
+            const payload = JSON.parse(decryptSecret(message.body, keys)) as {
+              text: string;
+              html?: string;
+            };
+            body = payload.text;
+            html = payload.html;
+          }
           await provider.send({
             from: config.emailFrom,
             to: message.recipient,
             subject: message.subject,
-            body: message.body,
-            html: message.htmlBody ?? undefined,
+            body,
+            html,
           });
           await outbox.markSent(message.id, now);
           sent += 1;
-        } catch {
+        } catch (err) {
           const backoff = config.emailRetryBackoffMs * 2 ** message.attemptCount;
-          await outbox.recordFailure(message.id, new Date(now.getTime() + backoff));
+          const failure = await outbox.recordFailure(
+            message.id,
+            new Date(now.getTime() + backoff),
+            config.emailRetryMax,
+          );
+          if (failure?.status === "dead") {
+            logger.error(
+              {
+                messageId: message.messageId,
+                recipient: message.recipient,
+                attempts: failure.attemptCount,
+                error: err instanceof Error ? err.message : String(err),
+              },
+              "email outbox: message failed permanently",
+            );
+          }
         }
       }
       return sent;

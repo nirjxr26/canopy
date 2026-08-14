@@ -70,6 +70,8 @@ function makeApp(): TestHarness {
   const tokens = createTokenService(createTokenRepository(db));
   const mfa = createMfaService({
     repository: createMfaRepository(db),
+    tokens,
+    db,
     keys: config.mfaEncryptionKeys,
     issuer: config.jwtIssuer,
   });
@@ -78,8 +80,10 @@ function makeApp(): TestHarness {
     outbox: createOutboxRepository(db),
     provider,
     config,
+    keys: config.mfaEncryptionKeys,
+    logger,
   });
-  const app = createApp({ config, logger, db, hasher, limiter, users, sessions, tokens, emails, mfa });
+  const app = createApp({ config, logger, db, hasher, limiter, users, sessions, tokens, emails, mfa, provider, keys: config.mfaEncryptionKeys });
   return { app, db, pool, users, provider };
 }
 
@@ -326,9 +330,9 @@ describeDb("auth endpoints", () => {
       const [cookieA, cookieB] = await twoSessions("sessions-2@example.com");
       const list = await request(harness.app).get(`${BASE_URL}/sessions`).set("Cookie", cookieA);
       const other = list.body.sessions.find((s: { isCurrent: boolean }) => !s.isCurrent);
-      const res = await request(harness.app).delete(`${BASE_URL}/sessions/${other.id}`).set("Cookie", cookieA);
+      const res = await request(harness.app).delete(`${BASE_URL}/sessions/${other.id}`).set("Origin", "http://localhost:5173").set("Cookie", cookieA);
       expect(res.status).toBe(204);
-      const foreign = await request(harness.app).delete(`${BASE_URL}/sessions/usr_does-not-exist`).set("Cookie", cookieA);
+      const foreign = await request(harness.app).delete(`${BASE_URL}/sessions/usr_does-not-exist`).set("Origin", "http://localhost:5173").set("Cookie", cookieA);
       expect(foreign.status).toBe(404);
       expect(foreign.body.error.code).toBe("NOT_FOUND");
     });
@@ -337,14 +341,14 @@ describeDb("auth endpoints", () => {
       const [cookieA, cookieB] = await twoSessions("sessions-3@example.com");
       const list = await request(harness.app).get(`${BASE_URL}/sessions`).set("Cookie", cookieA);
       const other = list.body.sessions.find((s: { isCurrent: boolean }) => !s.isCurrent);
-      await request(harness.app).delete(`${BASE_URL}/sessions/${other.id}`).set("Cookie", cookieA);
+      await request(harness.app).delete(`${BASE_URL}/sessions/${other.id}`).set("Origin", "http://localhost:5173").set("Cookie", cookieA);
       const dead = await request(harness.app).get(`${BASE_URL}/me`).set("Cookie", cookieB);
       expect(dead.status).toBe(401);
     });
 
     it("revokes all sessions", async () => {
       const [cookieA, cookieB] = await twoSessions("sessions-4@example.com");
-      const res = await request(harness.app).post(`${BASE_URL}/sessions/revoke-all`).set("Cookie", cookieA);
+      const res = await request(harness.app).post(`${BASE_URL}/sessions/revoke-all`).set("Origin", "http://localhost:5173").set("Cookie", cookieA);
       expect(res.status).toBe(204);
       const a = await request(harness.app).get(`${BASE_URL}/me`).set("Cookie", cookieA);
       const b = await request(harness.app).get(`${BASE_URL}/me`).set("Cookie", cookieB);
@@ -359,7 +363,7 @@ describeDb("auth endpoints", () => {
       const user = await harness.users.findByEmail("logout-1@example.com");
       await harness.users.verifyEmail(user!.id);
       const loginRes = await login(harness.app, "logout-1@example.com");
-      const res = await request(harness.app).post(`${BASE_URL}/logout`).set("Cookie", cookieOf(loginRes));
+      const res = await request(harness.app).post(`${BASE_URL}/logout`).set("Origin", "http://localhost:5173").set("Cookie", cookieOf(loginRes));
       expect(res.status).toBe(204);
       expect(Array.isArray(res.headers["set-cookie"]) ? res.headers["set-cookie"].join(";") : res.headers["set-cookie"]).toContain("Expires=Thu, 01 Jan 1970");
       const me = await request(harness.app).get(`${BASE_URL}/me`).set("Cookie", cookieOf(loginRes));

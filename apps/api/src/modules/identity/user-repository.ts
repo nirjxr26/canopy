@@ -1,6 +1,6 @@
 import type { Kysely, Selectable } from "kysely";
 import { PENDING_VERIFICATION } from "../../shared/user-status.js";
-import type { Database, UsersTable } from "../../infrastructure/db/database.js";
+import type { Database, DbExecutor, UsersTable } from "../../infrastructure/db/database.js";
 
 type UserRow = Selectable<UsersTable>;
 
@@ -69,7 +69,7 @@ function toUserRecord(row: UserRow): UserWithPasswordHash {
   };
 }
 
-export function createUserRepository(db: Kysely<Database>): UserRepository {
+export function createUserRepository(db: Kysely<Database> | DbExecutor): UserRepository {
   return {
     async insert(user) {
       const row = await db

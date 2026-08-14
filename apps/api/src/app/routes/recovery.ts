@@ -7,7 +7,7 @@ import { normalizeEmail } from "../../modules/identity/email-normalizer.js";
 import type { TokenService } from "../../modules/identity/token-service.js";
 import { assertPasswordPolicy } from "../../modules/identity/user-service.js";
 import type { UserService } from "../../modules/identity/user-service.js";
-import type { SessionService } from "../../modules/session/session-service.js";
+import type { AuthFlows } from "../../modules/identity/auth-flows.js";
 import type { EmailService } from "../../modules/email/email-service.js";
 import type { MfaService } from "../../modules/mfa/mfa-service.js";
 import { createRateLimit, ipKeyFn } from "../middleware/rate-limit.js";
@@ -17,9 +17,9 @@ export interface RecoveryRouterDeps {
   config: Config;
   limiter: RateLimiter;
   users: UserService;
-  sessions: SessionService;
   tokens: TokenService;
   emails: EmailService;
+  flows: AuthFlows;
   mfa: MfaService;
 }
 
@@ -27,9 +27,9 @@ export function createRecoveryRouter({
   config,
   limiter,
   users,
-  sessions,
   tokens,
   emails,
+  flows,
   mfa,
 }: RecoveryRouterDeps): Router {
   const router = Router();
@@ -40,11 +40,10 @@ export function createRecoveryRouter({
     async (req, res) => {
       const body = req.body ?? {};
       const raw = typeof body.token === "string" ? body.token : "";
-      const userId = await tokens.consume("EMAIL_VERIFICATION", raw);
+      const userId = await flows.verifyEmailToken(raw);
       if (userId === null) {
         throw new AppError(ERROR_CODES.TOKEN_INVALID, "Invalid or expired verification token");
       }
-      await users.verifyEmail(userId);
       const user = await users.getById(userId);
       if (user === null) {
         throw new AppError(ERROR_CODES.TOKEN_INVALID, "Invalid or expired verification token");
@@ -95,12 +94,10 @@ export function createRecoveryRouter({
       const raw = typeof body.token === "string" ? body.token : "";
       const newPassword = typeof body.newPassword === "string" ? body.newPassword : "";
       assertPasswordPolicy(newPassword);
-      const userId = await tokens.consume("PASSWORD_RESET", raw);
+      const userId = await flows.resetPassword(raw, newPassword);
       if (userId === null) {
         throw new AppError(ERROR_CODES.TOKEN_INVALID, "Invalid or expired reset token");
       }
-      await users.updatePassword(userId, newPassword);
-      await sessions.revokeAll(userId);
       const user = await users.getById(userId);
       if (user === null) {
         throw new AppError(ERROR_CODES.TOKEN_INVALID, "Invalid or expired reset token");

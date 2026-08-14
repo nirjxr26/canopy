@@ -42,7 +42,11 @@ export function parseCookies(header: string | undefined): Map<string, string> {
       value = value.slice(1, -1);
     }
     if (name !== "") {
-      cookies.set(name, decodeURIComponent(value));
+      try {
+        cookies.set(name, decodeURIComponent(value));
+      } catch {
+        // Malformed percent-encoding; treat the cookie as absent.
+      }
     }
   }
   return cookies;

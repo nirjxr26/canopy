@@ -48,10 +48,10 @@ describeDb("Session Introspection & Consumer Integration API", () => {
     const users = createUserService(createUserRepository(db), hasher);
     const sessions = createSessionService(createSessionRepository(db), { getById: users.getById }, config);
     const tokens = createTokenService(createTokenRepository(db));
-    const mfa = createMfaService({ repository: createMfaRepository(db), keys: config.mfaEncryptionKeys, issuer: config.jwtIssuer });
-    const emails = createEmailService({ outbox: createOutboxRepository(db), provider: { kind: "console", send: async () => {} }, config });
+    const mfa = createMfaService({ repository: createMfaRepository(db), tokens, db, keys: config.mfaEncryptionKeys, issuer: config.jwtIssuer });
+    const emails = createEmailService({ outbox: createOutboxRepository(db), provider: { kind: "console", send: async () => {} }, config, keys: config.mfaEncryptionKeys, logger });
 
-    const app = createApp({ config, logger, db, hasher, limiter, users, sessions, tokens, emails, mfa });
+    const app = createApp({ config, logger, db, hasher, limiter, users, sessions, tokens, emails, mfa, provider: { kind: "console", send: async () => {} }, keys: config.mfaEncryptionKeys });
 
     try {
       // 1. Create and verify user
@@ -62,6 +62,7 @@ describeDb("Session Introspection & Consumer Integration API", () => {
       // 2. Introspect with valid service key
       const validRes = await request(app)
         .post("/api/v1/auth/introspect")
+        .set("Origin", "http://localhost:3000")
         .set("X-Service-Key", SERVICE_KEY)
         .send({ sessionSecret: token });
 
@@ -73,6 +74,7 @@ describeDb("Session Introspection & Consumer Integration API", () => {
       // 3. Introspect with invalid service key -> 401
       const invalidKeyRes = await request(app)
         .post("/api/v1/auth/introspect")
+        .set("Origin", "http://localhost:3000")
         .set("X-Service-Key", "wrong-key")
         .send({ sessionSecret: token });
 
@@ -81,6 +83,7 @@ describeDb("Session Introspection & Consumer Integration API", () => {
       // 4. Introspect with invalid secret -> valid: false
       const invalidSecretRes = await request(app)
         .post("/api/v1/auth/introspect")
+        .set("Origin", "http://localhost:3000")
         .set("X-Service-Key", SERVICE_KEY)
         .send({ sessionSecret: "invalid-secret" });
 

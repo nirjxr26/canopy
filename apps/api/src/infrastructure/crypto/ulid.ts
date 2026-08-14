@@ -6,7 +6,7 @@ const TIME_LENGTH = 10;
 const RANDOM_LENGTH = 16;
 const TIME_MAX = Math.pow(2, 48) - 1;
 
-export type IdPrefix = "usr" | "sess" | "tok" | "mfac" | "rc";
+export type IdPrefix = "usr" | "sess" | "tok" | "mfac" | "rc" | "eml" | "wk";
 
 export function encodeTime(ms: number): string {
   ms = Math.floor(ms);

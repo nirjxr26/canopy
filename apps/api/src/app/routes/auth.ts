@@ -8,7 +8,7 @@ import type { UserService } from "../../modules/identity/user-service.js";
 import type { UserRecord } from "../../modules/identity/user-repository.js";
 import type { SessionService } from "../../modules/session/session-service.js";
 import type { TokenService } from "../../modules/identity/token-service.js";
-import type { EmailService } from "../../modules/email/email-service.js";
+import type { AuthFlows } from "../../modules/identity/auth-flows.js";
 import type { MfaService } from "../../modules/mfa/mfa-service.js";
 import { createRateLimit, ipKeyFn } from "../middleware/rate-limit.js";
 import { createRequireSession, requireAuth } from "../middleware/require-session.js";
@@ -21,7 +21,7 @@ export interface AuthRouterDeps {
   sessions: SessionService;
   users: UserService;
   tokens: TokenService;
-  emails: EmailService;
+  flows: AuthFlows;
   mfa: MfaService;
 }
 
@@ -45,7 +45,7 @@ export function createAuthRouter({
   sessions,
   users,
   tokens,
-  emails,
+  flows,
   mfa,
 }: AuthRouterDeps): Router {
   const router = Router();
@@ -72,21 +72,16 @@ export function createAuthRouter({
     createRateLimit(limiter, config.rateLimits.signup, ipKeyFn),
     async (req, res) => {
       const body = req.body ?? {};
-      const result = await users.register({
-        email: body.email,
-        password: body.password,
-        firstName: body.firstName,
-        lastName: body.lastName,
+      const result = await flows.signup({
+        email: typeof body.email === "string" ? body.email : "",
+        password: typeof body.password === "string" ? body.password : "",
+        firstName: typeof body.firstName === "string" ? body.firstName : undefined,
+        lastName: typeof body.lastName === "string" ? body.lastName : undefined,
       });
       const user = result.user!;
-      let devEmailLink: string | null = null;
-      if (user.status === "PENDING_VERIFICATION") {
-        const token = await tokens.issue("EMAIL_VERIFICATION", user.id);
-        devEmailLink = (await emails.queue("verify-email", user.email, token)).devLink;
-      }
       res.status(201).json({
         user: toUserJson(user),
-        ...(devEmailLink !== null ? { devEmailLink } : {}),
+        ...(result.devEmailLink !== null ? { devEmailLink: result.devEmailLink } : {}),
       });
     },
   );
