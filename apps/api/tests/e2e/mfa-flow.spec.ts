@@ -1,8 +1,8 @@
-﻿import { test, expect } from '@playwright/test';
+import { test, expect } from '@playwright/test';
 import { generateTotpCode } from '../../src/infrastructure/crypto/totp.js';
 import {
   extractTokenFromEmail,
-  waitForOutboxDelivery,
+  waitForOutboxRow,
 } from './helpers/email-outbox.js';
 
 test.describe('Automated API MFA Lifecycle (Enroll -> Confirm -> Login Challenge -> Disable)', () => {
@@ -22,7 +22,7 @@ test.describe('Automated API MFA Lifecycle (Enroll -> Confirm -> Login Challenge
     expect(signupRes.status()).toBe(201);
 
     // Verify email token from the outbox to activate the account (provider-agnostic)
-    const verifyEmail = await waitForOutboxDelivery(email, 'Verify your email');
+    const verifyEmail = await waitForOutboxRow(email, 'Verify your email');
     const verifyToken = extractTokenFromEmail(verifyEmail);
     const verifyRes = await request.post('/api/v1/auth/verify-email', {
       data: { token: verifyToken },
@@ -37,21 +37,23 @@ test.describe('Automated API MFA Lifecycle (Enroll -> Confirm -> Login Challenge
     });
     expect(loginRes.status()).toBe(200);
 
-    // 3. Step 1 of MFA Enrollment: POST /api/v1/auth/enroll -> returns { secret, otpauthUrl }
+    // 3. Step 1 of MFA Enrollment: POST /api/v1/auth/enroll -> returns { challenge, secret, otpauthUrl }
     const enrollRes = await request.post('/api/v1/auth/enroll', {
       headers: { Origin: origin },
     });
     expect(enrollRes.status()).toBe(200);
     const enrollBody = await enrollRes.json();
+    expect(enrollBody.challenge).toBeDefined();
     expect(enrollBody.secret).toBeDefined();
     expect(enrollBody.otpauthUrl).toBeDefined();
 
     // 4. Step 2 of MFA Enrollment: POST /api/v1/auth/confirm -> returns { recoveryCodes }
     const secret = enrollBody.secret;
+    const challenge = enrollBody.challenge;
     const confirmCode = generateTotpCode(secret);
 
     const confirmRes = await request.post('/api/v1/auth/confirm', {
-      data: { secret, code: confirmCode },
+      data: { challenge, code: confirmCode },
       headers: { Origin: origin },
     });
     expect(confirmRes.status()).toBe(200);
@@ -84,10 +86,10 @@ test.describe('Automated API MFA Lifecycle (Enroll -> Confirm -> Login Challenge
     const challengeBody = await challengeRes.json();
     expect(challengeBody.user).toBeDefined();
 
-    // 7. Disable MFA: POST /api/v1/auth/disable with { code } -> returns 204
+    // 7. Disable MFA: POST /api/v1/auth/disable with { currentPassword, code } -> returns 204
     const disableCode = generateTotpCode(secret);
     const disableRes = await request.post('/api/v1/auth/disable', {
-      data: { code: disableCode },
+      data: { currentPassword: password, code: disableCode },
       headers: { Origin: origin },
     });
     expect(disableRes.status()).toBe(204);

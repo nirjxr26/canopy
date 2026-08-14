@@ -36,6 +36,8 @@ const sessions = createSessionService(createSessionRepository(db), { getById: us
 const tokens = createTokenService(createTokenRepository(db));
 const mfa = createMfaService({
   repository: createMfaRepository(db),
+  tokens,
+  db,
   keys: config.mfaEncryptionKeys,
   issuer: config.jwtIssuer,
 });
@@ -52,8 +54,23 @@ const emails = createEmailService({
   outbox: createOutboxRepository(db),
   provider: emailProvider,
   config,
+  keys: config.mfaEncryptionKeys,
+  logger,
 });
-const app = createApp({ config, logger, db, hasher, limiter, users, sessions, tokens, emails, mfa });
+const app = createApp({
+  config,
+  logger,
+  db,
+  hasher,
+  limiter,
+  users,
+  sessions,
+  tokens,
+  emails,
+  mfa,
+  provider: emailProvider,
+  keys: config.mfaEncryptionKeys,
+});
 
 const server = app.listen(config.port, () => {
   logger.info({ port: config.port, env: config.nodeEnv }, "api listening");

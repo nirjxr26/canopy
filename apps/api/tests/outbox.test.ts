@@ -7,6 +7,7 @@ import type { Database } from "../src/infrastructure/db/database.js";
 import { createOutboxRepository } from "../src/modules/email/outbox-repository.js";
 import {
   createEmailService,
+  EMAIL_LEASE_MS,
   type EmailMessage,
   type EmailProvider,
 } from "../src/modules/email/email-service.js";
@@ -60,7 +61,7 @@ function makeHarness(provider: EmailProvider, overrides: Record<string, string> 
   const logger = createLogger("silent");
   const { db, pool } = createDb(config);
   const outbox = createOutboxRepository(db);
-  const emails = createEmailService({ outbox, provider, config });
+  const emails = createEmailService({ outbox, provider, config, keys: config.mfaEncryptionKeys, logger });
   return { db, pool, emails, provider };
 }
 
@@ -87,8 +88,16 @@ describeDb("email outbox", () => {
     expect(rows).toHaveLength(2);
     for (const row of rows) {
       expect(row.sent_at).not.toBeNull();
-      expect(row.html_body).not.toBeNull();
+      expect(row.status).toBe("sent");
+      expect(row.worker_id).toBeNull();
+      expect(row.locked_until).toBeNull();
+      expect(row.token_ref).not.toBeNull();
+      expect(row.html_body).toBeNull();
+      expect(row.body).not.toContain("verify-email?token=");
+      expect(row.body).not.toContain("reset-password?token=");
     }
+    expect(JSON.stringify(rows)).not.toContain("tok-one");
+    expect(JSON.stringify(rows)).not.toContain("tok-two");
     await harness.pool.end();
   });
 
@@ -136,9 +145,54 @@ describeDb("email outbox", () => {
       .where("recipient", "=", "outbox-dead@example.com")
       .executeTakeFirstOrThrow();
     expect(row.attempt_count).toBe(2);
+    expect(row.status).toBe("dead");
     const third = await harness.emails.processDueEmails(new Date(row.next_attempt_at.getTime() + 1));
     expect(third).toBe(0);
     expect(provider.attempts).toHaveLength(2);
+    await harness.pool.end();
+  });
+
+  it("leases a claimed row to one worker and reclaims it after the lease expires", async () => {
+    const harness = makeHarness(new FailingProvider(), { EMAIL_RETRY_MAX: "5" });
+    const provider = harness.provider as FailingProvider;
+    await harness.emails.queue("verify-email", "outbox-lease@example.com", "tok-lease");
+
+    // Simulate a worker that claims the row and then crashes mid-send.
+    const now = new Date();
+    const outbox = createOutboxRepository(harness.db);
+    const claimed = await outbox.claim(now, 5, 10, EMAIL_LEASE_MS, "wk_lease");
+    expect(claimed).toHaveLength(1);
+    let row = await harness.db
+      .selectFrom("email_outbox")
+      .selectAll()
+      .where("recipient", "=", "outbox-lease@example.com")
+      .executeTakeFirstOrThrow();
+    expect(row.status).toBe("processing");
+    expect(row.worker_id).toBe("wk_lease");
+    expect(row.locked_until).not.toBeNull();
+
+    // While the lease is held no other worker may claim or send the row.
+    const early = await harness.emails.processDueEmails(new Date(now.getTime() + EMAIL_LEASE_MS - 1));
+    expect(early).toBe(0);
+    expect(provider.attempts).toHaveLength(0);
+    row = await harness.db
+      .selectFrom("email_outbox")
+      .selectAll()
+      .where("recipient", "=", "outbox-lease@example.com")
+      .executeTakeFirstOrThrow();
+    expect(row.attempt_count).toBe(0);
+
+    // After the lease expires the row is reclaimed and processed exactly once.
+    const late = await harness.emails.processDueEmails(new Date(now.getTime() + EMAIL_LEASE_MS + 1));
+    expect(late).toBe(0);
+    expect(provider.attempts).toHaveLength(1);
+    row = await harness.db
+      .selectFrom("email_outbox")
+      .selectAll()
+      .where("recipient", "=", "outbox-lease@example.com")
+      .executeTakeFirstOrThrow();
+    expect(row.attempt_count).toBe(1);
+    expect(row.worker_id).toBeNull();
     await harness.pool.end();
   });
 });

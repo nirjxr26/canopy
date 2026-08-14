@@ -12,8 +12,8 @@ runRateLimiterSuite("memory", async () => {
   return { limiter, dispose: () => limiter.dispose() };
 });
 
-describe("rate limiter (redis fail-open)", () => {
-  it("allows requests when redis errors instead of throwing", async () => {
+describe("rate limiter (redis fail-closed)", () => {
+  it("denies requests when redis errors instead of failing open", async () => {
     const client = {
       incr: async () => {
         throw new Error("connection refused");
@@ -22,9 +22,10 @@ describe("rate limiter (redis fail-open)", () => {
       disconnect: () => undefined,
     } as unknown as Redis;
     const limiter = new RedisRateLimiter(client, { warn: () => undefined });
-    const result = await limiter.check("k-failopen", 3, 60_000);
-    expect(result.allowed).toBe(true);
-    expect(result.remaining).toBe(3);
+    const result = await limiter.check("k-failclosed", 3, 60_000);
+    expect(result.allowed).toBe(false);
+    expect(result.remaining).toBe(0);
+    expect(result.retryAfterMs).toBe(60_000);
   });
 });
 

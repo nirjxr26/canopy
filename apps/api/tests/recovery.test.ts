@@ -25,6 +25,8 @@ import {
 } from "../src/modules/email/email-service.js";
 import { describeDb, resetTestDatabase, TEST_DATABASE_URL, TEST_MFA_KEY } from "./helpers/db.js";
 import { migrateToLatest } from "../src/infrastructure/db/migrate.js";
+import { decryptSecret } from "../src/infrastructure/crypto/cipher.js";
+import type { EncryptionKeyEntry } from "../src/infrastructure/config/config.js";
 
 const PASSWORD = "Correct-horse-battery-staple-1";
 const NEW_PASSWORD = "New-correct-horse-battery-staple-2";
@@ -58,6 +60,7 @@ interface TestHarness {
   pool: { end(): Promise<void> };
   users: ReturnType<typeof createUserService>;
   provider: RecordingProvider;
+  keys: readonly EncryptionKeyEntry[];
 }
 
 function makeApp(): TestHarness {
@@ -76,6 +79,8 @@ function makeApp(): TestHarness {
   const tokens = createTokenService(createTokenRepository(db));
   const mfa = createMfaService({
     repository: createMfaRepository(db),
+    tokens,
+    db,
     keys: config.mfaEncryptionKeys,
     issuer: config.jwtIssuer,
   });
@@ -84,9 +89,11 @@ function makeApp(): TestHarness {
     outbox: createOutboxRepository(db),
     provider,
     config,
+    keys: config.mfaEncryptionKeys,
+    logger,
   });
-  const app = createApp({ config, logger, db, hasher, limiter, users, sessions, tokens, emails, mfa });
-  return { app, db, pool, users, provider };
+  const app = createApp({ config, logger, db, hasher, limiter, users, sessions, tokens, emails, mfa, provider, keys: config.mfaEncryptionKeys });
+  return { app, db, pool, users, provider, keys: config.mfaEncryptionKeys };
 }
 
 function cookieOf(res: request.Response): string {
@@ -147,6 +154,11 @@ function tokenFromBody(body: string): string {
   return match[1]!;
 }
 
+function unsealBody(body: string, keys: readonly EncryptionKeyEntry[]): string {
+  const parsed = JSON.parse(decryptSecret(body, keys)) as { text: string };
+  return parsed.text;
+}
+
 describeDb("verification & recovery endpoints", () => {
   beforeAll(async () => {
     await resetTestDatabase();
@@ -169,7 +181,7 @@ describeDb("verification & recovery endpoints", () => {
       .where("recipient", "=", email)
       .orderBy("id", "desc")
       .executeTakeFirstOrThrow();
-    return { token: tokenFromBody(message.body) };
+    return { token: tokenFromBody(unsealBody(message.body, harness.keys)) };
   }
 
   describe("verify-email", () => {
@@ -183,7 +195,7 @@ describeDb("verification & recovery endpoints", () => {
         .where("recipient", "=", email)
         .executeTakeFirstOrThrow();
       expect(message.subject).toBe("Verify your email");
-      const token = tokenFromBody(message.body);
+      const token = tokenFromBody(unsealBody(message.body, harness.keys));
       const activated = await verifyEmail(harness.app, token);
       expect(activated.status).toBe(200);
     });
@@ -247,7 +259,8 @@ describeDb("verification & recovery endpoints", () => {
         .where("recipient", "=", email)
         .executeTakeFirstOrThrow();
       expect(message.subject).toBe("Verify your email");
-      expect(message.body).toContain("verify-email?token=");
+      expect(message.body).not.toContain("verify-email?token=");
+      expect(unsealBody(message.body, harness.keys)).toContain("verify-email?token=");
       const tokenRow = await harness.db
         .selectFrom("tokens")
         .selectAll()
@@ -365,7 +378,7 @@ describeDb("verification & recovery endpoints", () => {
         .where("recipient", "=", email)
         .orderBy("id", "desc")
         .executeTakeFirstOrThrow();
-      return tokenFromBody(message.body);
+      return tokenFromBody(unsealBody(message.body, harness.keys));
     }
 
     async function activeUser(email: string) {

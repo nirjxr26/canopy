@@ -30,11 +30,9 @@ export class RedisRateLimiter implements RateLimiter {
       };
     } catch (err) {
       this.logger.warn(
-        `rate limiter: redis unavailable, allowing request (${err instanceof Error ? err.message : String(err)})`,
+        `rate limiter: redis unavailable, denying request (${err instanceof Error ? err.message : String(err)})`,
       );
-      // ponytail: accept the window-key TTL leak if incr succeeded but pexpire
-      // failed — keys are window-scoped so a stale key is never touched again.
-      return { allowed: true, limit, remaining: limit, retryAfterMs: 0 };
+      return { allowed: false, limit, remaining: 0, retryAfterMs: windowMs };
     }
   }
 

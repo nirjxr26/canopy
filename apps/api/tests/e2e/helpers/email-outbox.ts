@@ -1,5 +1,7 @@
 ﻿import "dotenv/config";
 import pg from "pg";
+import { loadConfig } from "../../../src/infrastructure/config/config.js";
+import { decryptSecret } from "../../../src/infrastructure/crypto/cipher.js";
 
 const { Pool } = pg;
 
@@ -95,8 +97,20 @@ export async function waitForOutboxDelivery(
   );
 }
 
+function unsealBody(body: string): string {
+  if (/^v\d+:/.test(body)) {
+    const config = loadConfig(process.env as Record<string, string>);
+    const parsed = JSON.parse(decryptSecret(body, config.mfaEncryptionKeys)) as {
+      text: string;
+    };
+    return parsed.text;
+  }
+  return body;
+}
+
 export function extractTokenFromEmail(row: OutboxDbRow): string {
-  const match = row.body.match(/[?&]token=([A-Za-z0-9_-]+)/);
+  const body = unsealBody(row.body);
+  const match = body.match(/[?&]token=([A-Za-z0-9_-]+)/);
   if (match === null) {
     throw new Error(`no token found in email body for ${row.recipient} / ${row.subject}`);
   }

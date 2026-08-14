@@ -1,5 +1,5 @@
 import type { Kysely } from "kysely";
-import type { Database } from "../../infrastructure/db/database.js";
+import type { Database, DbExecutor } from "../../infrastructure/db/database.js";
 import { createId } from "../../infrastructure/crypto/ulid.js";
 
 export interface MfaCredential {
@@ -30,7 +30,7 @@ export interface MfaRepository {
   deleteRecoveryCodes(userId: string): Promise<void>;
 }
 
-export function createMfaRepository(db: Kysely<Database>): MfaRepository {
+export function createMfaRepository(db: Kysely<Database> | DbExecutor): MfaRepository {
   return {
     async findEnabledByUser(userId) {
       const row = await db

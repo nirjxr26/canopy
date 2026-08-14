@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { AppError, ERROR_CODES } from "../../shared/app-error.js";
 import type { Config } from "../../infrastructure/config/config.js";
+import type { PasswordHasher } from "../../infrastructure/crypto/password.js";
 import type { RateLimiter } from "../../infrastructure/ratelimit/rate-limiter.js";
 import type { UserService } from "../../modules/identity/user-service.js";
 import type { SessionService } from "../../modules/session/session-service.js";
@@ -14,6 +15,7 @@ import { toUserJson } from "./auth.js";
 
 export interface MfaRouterDeps {
   config: Config;
+  hasher: PasswordHasher;
   limiter: RateLimiter;
   sessions: SessionService;
   users: UserService;
@@ -21,7 +23,15 @@ export interface MfaRouterDeps {
   mfa: MfaService;
 }
 
-export function createMfaRouter({ config, limiter, sessions, users, tokens, mfa }: MfaRouterDeps): Router {
+export function createMfaRouter({
+  config,
+  hasher,
+  limiter,
+  sessions,
+  users,
+  tokens,
+  mfa,
+}: MfaRouterDeps): Router {
   const router = Router();
   const requireSession = createRequireSession(sessions, config);
 
@@ -31,8 +41,8 @@ export function createMfaRouter({ config, limiter, sessions, users, tokens, mfa 
     requireSession,
     async (req, res) => {
       const { user } = requireAuth(req);
-      const { secret, otpauthUrl } = await mfa.enroll(user);
-      res.status(200).json({ secret, otpauthUrl });
+      const { challenge, secret, otpauthUrl } = await mfa.enroll(user);
+      res.status(200).json({ challenge, secret, otpauthUrl });
     },
   );
 
@@ -43,9 +53,9 @@ export function createMfaRouter({ config, limiter, sessions, users, tokens, mfa 
     async (req, res) => {
       const { user } = requireAuth(req);
       const body = req.body ?? {};
-      const secret = typeof body.secret === "string" ? body.secret : "";
+      const challenge = typeof body.challenge === "string" ? body.challenge : "";
       const code = typeof body.code === "string" ? body.code : "";
-      const { recoveryCodes } = await mfa.confirm(user, secret, code);
+      const { recoveryCodes } = await mfa.confirm(user, challenge, code);
       res.status(200).json({ recoveryCodes });
     },
   );
@@ -66,17 +76,21 @@ export function createMfaRouter({ config, limiter, sessions, users, tokens, mfa 
         (await mfa.verifyCode(pending.userId, code)) ||
         (await mfa.consumeRecoveryCode(pending.userId, code));
       if (!codeValid) {
-        const fails = (pending.metadata?.mfaFailedAttempts as number | undefined) ?? 0;
-        const next = fails + 1;
-        if (next >= 5) {
+        const fails = await tokens.incrementMfaFailures(pending.id);
+        if (fails === null) {
+          throw new AppError(ERROR_CODES.TOKEN_INVALID, "Session expired — sign in again");
+        }
+        if (fails >= 5) {
           await tokens.markUsed(pending.id, now);
           throw new AppError(ERROR_CODES.MFA_INVALID, "Too many failed attempts — sign in again");
         }
-        await tokens.updateMetadata(pending.id, { ...pending.metadata, mfaFailedAttempts: next });
         throw new AppError(ERROR_CODES.MFA_INVALID, "Invalid code");
       }
-      await tokens.markUsed(pending.id, now);
-      const user = await users.getById(pending.userId);
+      const claimedUserId = await tokens.consume("MFA_PENDING", mfaToken, now);
+      if (claimedUserId === null) {
+        throw new AppError(ERROR_CODES.TOKEN_INVALID, "Session expired — sign in again");
+      }
+      const user = await users.getById(claimedUserId);
       if (user === null) {
         throw new AppError(ERROR_CODES.TOKEN_INVALID, "Session expired — sign in again");
       }
@@ -96,10 +110,20 @@ export function createMfaRouter({ config, limiter, sessions, users, tokens, mfa 
     createRateLimit(limiter, config.rateLimits.mfaDisable, ipKeyFn),
     requireSession,
     async (req, res) => {
-      const { user } = requireAuth(req);
+      const { session, user } = requireAuth(req);
       const body = req.body ?? {};
+      const currentPassword = typeof body.currentPassword === "string" ? body.currentPassword : "";
       const code = typeof body.code === "string" ? body.code : "";
+      const account = await users.findByEmail(user.email);
+      if (account === null) {
+        throw new AppError(ERROR_CODES.INVALID_CREDENTIALS, "Invalid current password");
+      }
+      const valid = await hasher.verify(account.passwordHash, currentPassword);
+      if (!valid) {
+        throw new AppError(ERROR_CODES.INVALID_CREDENTIALS, "Invalid current password");
+      }
       await mfa.disable(user.id, code);
+      await sessions.revokeAllExcept(user.id, session.id);
       res.status(204).end();
     },
   );
