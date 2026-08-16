@@ -144,19 +144,53 @@ export const authApi = {
       body: { token, newPassword },
     });
   },
+  changePassword(input: { currentPassword: string; newPassword: string }) {
+    return api<void>("/api/v1/auth/change-password", {
+      method: "POST",
+      body: input,
+    });
+  },
+};
+
+export interface Session {
+  id: string;
+  ipAddress: string | null;
+  userAgent: string | null;
+  createdAt: string;
+  expiresAt: string;
+  lastUsedAt: string;
+  isCurrent: boolean;
+}
+
+export const sessionsApi = {
+  list() {
+    return api<{ sessions: Session[] }>("/api/v1/auth/sessions");
+  },
+  revoke(id: string) {
+    return api<void>(`/api/v1/auth/sessions/${id}`, { method: "DELETE" });
+  },
+  revokeAll() {
+    return api<void>("/api/v1/auth/sessions/revoke-all", { method: "POST" });
+  },
 };
 
 export const mfaApi = {
   enroll() {
-    return api<{ secret: string; otpauthUrl: string }>("/api/v1/auth/enroll", { method: "POST" });
+    return api<{ challenge: string; secret: string; otpauthUrl: string }>("/api/v1/auth/enroll", { method: "POST" });
   },
-  confirm(input: { secret: string; code: string }) {
+  confirm(input: { challenge: string; code: string }) {
     return api<{ recoveryCodes: string[] }>("/api/v1/auth/confirm", { method: "POST", body: input });
   },
   verify(input: { mfaToken: string; code: string }) {
     return api<{ user: User }>("/api/v1/auth/verify", { method: "POST", body: input });
   },
-  disable(code: string) {
-    return api<void>("/api/v1/auth/disable", { method: "POST", body: { code } });
+  disable(input: { currentPassword: string; code: string }) {
+    return api<void>("/api/v1/auth/disable", { method: "POST", body: input });
+  },
+  regenerateRecoveryCodes(input: { code: string }) {
+    return api<{ recoveryCodes: string[] }>("/api/v1/auth/recovery-codes/regenerate", {
+      method: "POST",
+      body: input,
+    });
   },
 };

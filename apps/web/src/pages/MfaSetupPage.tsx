@@ -2,6 +2,7 @@ import { type ReactNode, type SubmitEvent, useEffect, useRef, useState } from "r
 import { useNavigate } from "react-router-dom";
 import QRCode from "qrcode";
 import { ApiError, mfaApi } from "../lib/api";
+import { useAuth } from "../lib/auth";
 import { useSubmit } from "../lib/submit";
 import { Alert } from "../ui/Alert";
 import { Button } from "../ui/Button";
@@ -27,9 +28,11 @@ const STEP_META: Record<Step, { title: string; subtitle: string }> = {
 
 export function MfaSetupPage() {
   const navigate = useNavigate();
+  const { refresh } = useAuth();
   const { error: enrollError, run: enrollRun } = useSubmit();
   const { pending: confirming, error: confirmError, run: confirmRun } = useSubmit();
   const [step, setStep] = useState<Step>("enroll");
+  const [challenge, setChallenge] = useState<string | null>(null);
   const [secret, setSecret] = useState<string | null>(null);
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
   const [code, setCode] = useState("");
@@ -42,6 +45,7 @@ export function MfaSetupPage() {
   async function doEnroll() {
     try {
       const result = await mfaApi.enroll();
+      setChallenge(result.challenge);
       setSecret(result.secret);
       const dataUrl = await QRCode.toDataURL(result.otpauthUrl, {
         width: 220,
@@ -79,19 +83,21 @@ export function MfaSetupPage() {
 
   function onConfirm(event: SubmitEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (secret === null || code.trim() === "") {
+    if (challenge === null || code.trim() === "") {
       setFieldError("Enter the 6-digit code");
       return;
     }
     setFieldError(null);
     void confirmRun(async () => {
       try {
-        const result = await mfaApi.confirm({ secret, code: code.trim() });
+        const result = await mfaApi.confirm({ challenge, code: code.trim() });
         setRecoveryCodes(result.recoveryCodes);
         setStep("codes");
+        await refresh();
       } catch (err) {
         if (err instanceof ApiError && err.code === "CONFLICT") {
           window.alert("2FA is already enabled");
+          await refresh();
           navigate("/");
           return;
         }
