@@ -1,6 +1,12 @@
 import { Redis } from "ioredis";
 import { currentWindowStart, type RateLimiter, type RateLimitResult } from "./rate-limiter.js";
 
+const INCR_AND_PEXPIRE_SCRIPT = `
+  local n = redis.call('INCR', KEYS[1])
+  if n == 1 then redis.call('PEXPIRE', KEYS[1], ARGV[1]) end
+  return n
+`;
+
 export class RedisRateLimiter implements RateLimiter {
   readonly backend = "redis" as const;
   private readonly client: Redis;
@@ -17,10 +23,7 @@ export class RedisRateLimiter implements RateLimiter {
     const redisKey = `rl:${key}:${windowStart}`;
 
     try {
-      const count = await this.client.incr(redisKey);
-      if (count === 1) {
-        await this.client.pexpire(redisKey, windowMs + 1000);
-      }
+      const count = (await this.client.eval(INCR_AND_PEXPIRE_SCRIPT, 1, redisKey, windowMs + 1000)) as number;
 
       return {
         allowed: count <= limit,

@@ -27,6 +27,7 @@ export interface MfaService {
   ): Promise<{ recoveryCodes: string[] }>;
   verifyCode(userId: string, code: string): Promise<boolean>;
   disable(userId: string, code: string): Promise<void>;
+  regenerateRecoveryCodes(userId: string, code: string): Promise<string[]>;
   consumeRecoveryCode(userId: string, code: string): Promise<boolean>;
 }
 
@@ -128,9 +129,22 @@ export function createMfaService(deps: {
     });
   }
 
+  async function regenerateRecoveryCodes(userId: string, code: string): Promise<string[]> {
+    if (!(await verifyCode(userId, code))) {
+      throw new AppError(ERROR_CODES.MFA_INVALID, "Invalid code");
+    }
+    const recoveryCodes = generateRecoveryCodes();
+    await db.transaction().execute(async (tx) => {
+      const repo = createMfaRepository(tx);
+      await repo.deleteRecoveryCodes(userId);
+      await repo.insertRecoveryCodes(userId, recoveryCodes.map(sha256));
+    });
+    return recoveryCodes;
+  }
+
   async function consumeRecoveryCode(userId: string, code: string): Promise<boolean> {
     return repository.consumeRecoveryCode(userId, sha256(code));
   }
 
-  return { isEnabled, enroll, confirm, verifyCode, disable, consumeRecoveryCode };
+  return { isEnabled, enroll, confirm, verifyCode, disable, regenerateRecoveryCodes, consumeRecoveryCode };
 }

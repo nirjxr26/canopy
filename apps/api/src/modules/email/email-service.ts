@@ -1,8 +1,7 @@
 import type pino from "pino";
 import nodemailer from "nodemailer";
-import type { Config } from "../../infrastructure/config/config.js";
+import type { Config, EncryptionKeyEntry } from "../../infrastructure/config/config.js";
 import { decryptSecret, encryptSecret } from "../../infrastructure/crypto/cipher.js";
-import type { EncryptionKeyEntry } from "../../infrastructure/config/config.js";
 import { createId } from "../../infrastructure/crypto/ulid.js";
 import type { OutboxRepository } from "./outbox-repository.js";
 
@@ -44,8 +43,12 @@ function escapeHtml(value: string): string {
     .replaceAll("\"", "&quot;");
 }
 
-function normalizeFrontendUrl(url: string): string {
+function normalizeFrontendUrlForProduction(url: string): string {
   return url.replace(/^http:\/\//i, "https://");
+}
+
+function normalizeFrontendUrlForDevelopment(url: string): string {
+  return url;
 }
 
 function renderEmailHtml(deps: {
@@ -127,7 +130,7 @@ const EMAIL_META: Record<EmailKind, { subject: string; buttonLabel: string; expi
 export function createEmailService(deps: {
   outbox: OutboxRepository;
   provider: EmailProvider;
-  config: Pick<Config, "emailFrom" | "frontendUrl" | "emailRetryMax" | "emailRetryBackoffMs">;
+  config: Pick<Config, "nodeEnv" | "emailFrom" | "frontendUrl" | "emailRetryMax" | "emailRetryBackoffMs">;
   keys: readonly EncryptionKeyEntry[];
   logger: pino.Logger;
 }): EmailService {
@@ -143,7 +146,10 @@ export function createEmailService(deps: {
       kind === "verify-email"
         ? `/verify-email?token=${encodeURIComponent(token)}`
         : `/reset-password?token=${encodeURIComponent(token)}`;
-    const frontendUrl = normalizeFrontendUrl(config.frontendUrl);
+    const frontendUrl =
+      config.nodeEnv === "production"
+        ? normalizeFrontendUrlForProduction(config.frontendUrl)
+        : normalizeFrontendUrlForDevelopment(config.frontendUrl);
     const url = `${frontendUrl}${path}`;
     const expiryNote = `This link expires in ${meta.expiresIn}.`;
     const body =

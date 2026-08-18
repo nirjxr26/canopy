@@ -1,7 +1,7 @@
-import { type SubmitEvent, useState } from "react";
+import { type SubmitEvent, useEffect, useState } from "react";
 import { Link, Navigate, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../lib/auth";
-import { authApi, isEmail } from "../lib/api";
+import { ApiError, authApi, isEmail } from "../lib/api";
 import { useSubmit } from "../lib/submit";
 import { Alert } from "../ui/Alert";
 import { Button } from "../ui/Button";
@@ -20,33 +20,15 @@ export function LoginPage() {
   const [keepSignedIn, setKeepSignedIn] = useState(true);
   const [fieldErrors, setFieldErrors] = useState<{ email?: string; password?: string }>({});
   const [resendMessage, setResendMessage] = useState<{ tone: "success" | "info"; text: string; link?: string } | null>(null);
+  const [unverified, setUnverified] = useState(false);
 
-  if (user !== null) {
-    return <Navigate to="/" replace />;
-  }
+  useEffect(() => {
+    if (unverified) {
+      sendVerification();
+    }
+  }, [unverified]);
 
-  function validate(): boolean {
-    const next: { email?: string; password?: string } = {};
-    if (!isEmail(email)) next.email = "Enter a valid email address";
-    if (password.length === 0) next.password = "Enter your password";
-    setFieldErrors(next);
-    return Object.keys(next).length === 0;
-  }
-
-  function onSubmit(event: SubmitEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!validate()) return;
-    void run(async () => {
-      const result = await login(email, password, keepSignedIn);
-      if ("mfaRequired" in result) {
-        const from = (location.state as { from?: string } | null)?.from ?? "/";
-        sessionStorage.setItem("auuth.mfaToken", result.mfaToken);
-        navigate("/mfa", { state: { from } });
-      }
-    });
-  }
-
-  function onResend() {
+  function sendVerification() {
     void resend.run(async () => {
       const result = await authApi.resendVerification(email);
       if (result.devEmailLink !== undefined) {
@@ -64,6 +46,35 @@ export function LoginPage() {
     });
   }
 
+  if (user !== null) {
+    return <Navigate to="/" replace />;
+  }
+
+  function validate(): boolean {
+    const next: { email?: string; password?: string } = {};
+    if (!isEmail(email)) next.email = "Enter a valid email address";
+    if (password.length === 0) next.password = "Enter your password";
+    setFieldErrors(next);
+    return Object.keys(next).length === 0;
+  }
+
+  function onSubmit(event: SubmitEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!validate()) return;
+    void run(async () => {
+      try {
+        const result = await login(email, password, keepSignedIn);
+        if ("mfaRequired" in result) {
+          const from = (location.state as { from?: string } | null)?.from ?? "/";
+          navigate("/mfa", { state: { from, mfaToken: result.mfaToken } });
+        }
+      } catch (err) {
+        setUnverified(err instanceof ApiError && err.code === "EMAIL_NOT_VERIFIED");
+        throw err;
+      }
+    });
+  }
+
   return (
     <AuthShell>
       <Card title="Welcome back" subtitle="Sign in to your account to continue.">
@@ -71,7 +82,12 @@ export function LoginPage() {
         {resendMessage !== null ? (
           <Alert tone={resendMessage.tone}>
             {resendMessage.text}
-            {resendMessage.link !== undefined ? <a href={resendMessage.link}>{resendMessage.link}</a> : null}
+            {resendMessage.link !== undefined ? (
+              <>
+                {" "}
+                <a href={resendMessage.link}>{resendMessage.link}</a>
+              </>
+            ) : null}
           </Alert>
         ) : null}
         <form onSubmit={onSubmit} noValidate>
@@ -100,7 +116,7 @@ export function LoginPage() {
                 onChange={(e) => setKeepSignedIn(e.target.checked)}
                 className="size-4 accent-[var(--color-accent)]"
               />
-              Remember me
+              <span>Remember me</span>
             </label>
             <Link to="/forgot-password" className="hover:text-text md-5">
               Forgot password?
@@ -118,7 +134,7 @@ export function LoginPage() {
         </div>
         {error !== null ? (
           <div className="flex items-center justify-center gap-2 mt-4 text-text-muted text-[13.5px]">
-            <Button variant="ghost" loading={resend.pending} onClick={onResend}>
+            <Button variant="ghost" loading={resend.pending} onClick={sendVerification}>
               Email not verified? Resend the link
             </Button>
           </div>

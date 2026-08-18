@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, expect, it } from "vitest";
 import request from "supertest";
 import { createApp } from "../src/app/app.js";
 import { loadConfig } from "../src/infrastructure/config/config.js";
@@ -70,6 +70,7 @@ describeDb("Session Introspection & Consumer Integration API", () => {
       expect(validRes.body.valid).toBe(true);
       expect(validRes.body.userId).toBe(userRes.user!.id);
       expect(validRes.body.email).toBe("introspect-consumer@example.com");
+      expect(validRes.body.status).toBe("ACTIVE");
 
       // 3. Introspect with invalid service key -> 401
       const invalidKeyRes = await request(app)

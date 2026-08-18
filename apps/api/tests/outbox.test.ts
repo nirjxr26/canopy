@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, expect, it } from "vitest";
 import { Kysely } from "kysely";
 import { loadConfig } from "../src/infrastructure/config/config.js";
 import { createLogger } from "../src/infrastructure/logging/logger.js";

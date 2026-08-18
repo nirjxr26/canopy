@@ -41,4 +41,4 @@ export async function resetTestDatabase(url: string = TEST_DATABASE_URL): Promis
 }
 
 export const dbAvailable = await probeDatabase();
-export const describeDb = dbAvailable ? describe : describe.skip;
+export const describeDb = (dbAvailable ? describe : describe.skip) as typeof describe;

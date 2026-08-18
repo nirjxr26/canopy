@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, expect, it } from "vitest";
 import request from "supertest";
 import { generateKeyPairSync } from "node:crypto";
 import { jwtVerify, importSPKI } from "jose";
@@ -20,6 +20,7 @@ import { createSessionRepository } from "../src/modules/session/session-reposito
 import { createSessionService } from "../src/modules/session/session-service.js";
 import { describeDb, resetTestDatabase, TEST_DATABASE_URL, TEST_MFA_KEY } from "./helpers/db.js";
 import { migrateToLatest } from "../src/infrastructure/db/migrate.js";
+import { makeJwtKey, validateJwtKey } from "../src/modules/jwt/jwt-service.js";
 
 const PASSWORD = "Correct-horse-battery-staple-1";
 const ORIGIN = "http://localhost:5173";
@@ -92,6 +93,21 @@ describeDb("JWT issuing (tokens) and JWKS", () => {
     }
   });
 
+  it("validateJwtKey rejects an invalid PEM", async () => {
+    await expect(validateJwtKey("not a pem")).rejects.toThrow();
+  });
+
+  it("validateJwtKey resolves for a valid RSA key", async () => {
+    await expect(validateJwtKey(JWT_PRIVATE_KEY)).resolves.toBeUndefined();
+  });
+
+  it("makeJwtKey caches the parsed key across calls", async () => {
+    const config = makeTestConfig();
+    const first = await makeJwtKey(config);
+    const second = await makeJwtKey(config);
+    expect(first).toBe(second);
+  });
+
   it("POST /api/v1/auth/tokens requires an authenticated session", async () => {
     const { app, pool } = makeHarness();
     try {
@@ -118,7 +134,7 @@ describeDb("JWT issuing (tokens) and JWKS", () => {
         .set("Origin", ORIGIN)
         .send({ email: "jwt-mint@example.com", password: PASSWORD });
       expect(loginRes.status).toBe(200);
-      const cookie = loginRes.headers["set-cookie"][0].split(";")[0];
+      const cookie = loginRes.headers["set-cookie"]![0]!.split(";")[0]!;
 
       const res = await request(app)
         .post("/api/v1/auth/tokens")

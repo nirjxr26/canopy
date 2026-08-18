@@ -1,6 +1,5 @@
 import type pino from "pino";
-import type { Config } from "../../infrastructure/config/config.js";
-import type { EncryptionKeyEntry } from "../../infrastructure/config/config.js";
+import type { Config, EncryptionKeyEntry } from "../../infrastructure/config/config.js";
 import type { PasswordHasher } from "../../infrastructure/crypto/password.js";
 import type { DbExecutor } from "../../infrastructure/db/database.js";
 import { createEmailService } from "../email/email-service.js";

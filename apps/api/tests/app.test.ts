@@ -45,35 +45,37 @@ function buildApp(config: ReturnType<typeof makeTestConfig>, db: Kysely<Database
   return createApp({ config, logger, db, hasher, limiter, users, sessions, tokens, emails, mfa, provider, keys: config.mfaEncryptionKeys });
 }
 
+async function withApp(
+  config: ReturnType<typeof makeTestConfig>,
+  run: (app: ReturnType<typeof createApp>) => Promise<void>,
+): Promise<void> {
+  const { db, pool } = createDb(config);
+  try {
+    await run(buildApp(config, db));
+  } finally {
+    await pool.end();
+  }
+}
+
 describe("app basics", () => {
   const config = makeTestConfig();
-  const logger = createLogger("silent");
-
-  async function withApp(run: (app: ReturnType<typeof createApp>) => Promise<void>): Promise<void> {
-    const { db, pool } = createDb(config);
-    try {
-      await run(buildApp(config, db));
-    } finally {
-      await pool.end();
-    }
-  }
 
   it("returns X-Request-Id on every response", async () => {
-    await withApp(async (app) => {
+    await withApp(config, async (app) => {
       const res = await request(app).get("/healthz").set("X-Request-Id", "my-custom-id-123");
       expect(res.header["x-request-id"]).toBe("my-custom-id-123");
     });
   });
 
   it("generates a request id when none is supplied", async () => {
-    await withApp(async (app) => {
+    await withApp(config, async (app) => {
       const res = await request(app).get("/healthz");
       expect(res.header["x-request-id"]).toMatch(/^[\w.-]{8,64}$/);
     });
   });
 
   it("shapes unknown routes as the documented error envelope", async () => {
-    await withApp(async (app) => {
+    await withApp(config, async (app) => {
       const res = await request(app).get("/api/v1/nope");
       expect(res.status).toBe(404);
       expect(res.body).toMatchObject({
@@ -84,7 +86,7 @@ describe("app basics", () => {
   });
 
   it("maps malformed JSON to a 400 VALIDATION error", async () => {
-    await withApp(async (app) => {
+    await withApp(config, async (app) => {
       const res = await request(app)
         .post("/api/v1/auth/login")
         .set("Content-Type", "application/json")
@@ -95,7 +97,7 @@ describe("app basics", () => {
   });
 
   it("never leaks stack traces or internals", async () => {
-    await withApp(async (app) => {
+    await withApp(config, async (app) => {
       const res = await request(app)
         .post("/api/v1/auth/login")
         .set("Content-Type", "application/json")
@@ -103,6 +105,51 @@ describe("app basics", () => {
       const body = JSON.stringify(res.body);
       expect(body).not.toContain("at ");
       expect(body).not.toContain("Error");
+    });
+  });
+});
+
+describe("HTTPS enforcement", () => {
+  it("rejects plain HTTP with HTTPS_REQUIRED when HTTPS_ENFORCED is set", async () => {
+    const config = loadConfig({
+      NODE_ENV: "test",
+      DATABASE_URL: TEST_DATABASE_URL,
+      FRONTEND_URL: "http://localhost:5173",
+      AUTH_BASE_URL: "http://localhost:3000",
+      MFA_ENCRYPTION_KEYS: TEST_MFA_KEY,
+      HTTPS_ENFORCED: "true",
+    });
+    await withApp(config, async (app) => {
+      const res = await request(app).get("/api/v1/nope");
+      expect(res.status).toBe(403);
+      expect(res.body).toMatchObject({
+        error: { code: "HTTPS_REQUIRED", message: "HTTPS is required" },
+      });
+    });
+  });
+
+  it("accepts X-Forwarded-Proto: https when TRUST_PROXY is set", async () => {
+    const config = loadConfig({
+      NODE_ENV: "test",
+      DATABASE_URL: TEST_DATABASE_URL,
+      FRONTEND_URL: "http://localhost:5173",
+      AUTH_BASE_URL: "http://localhost:3000",
+      MFA_ENCRYPTION_KEYS: TEST_MFA_KEY,
+      HTTPS_ENFORCED: "true",
+      TRUST_PROXY: "1",
+    });
+    await withApp(config, async (app) => {
+      const res = await request(app).get("/api/v1/nope").set("X-Forwarded-Proto", "https");
+      expect(res.status).toBe(404);
+      expect(res.body).toMatchObject({ error: { code: "NOT_FOUND", message: "Not found" } });
+    });
+  });
+
+  it("does not enforce HTTPS by default", async () => {
+    await withApp(makeTestConfig(), async (app) => {
+      const res = await request(app).get("/api/v1/nope");
+      expect(res.status).toBe(404);
+      expect(res.body).toMatchObject({ error: { code: "NOT_FOUND", message: "Not found" } });
     });
   });
 });

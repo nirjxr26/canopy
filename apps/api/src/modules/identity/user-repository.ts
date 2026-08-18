@@ -31,8 +31,8 @@ export interface NewUser {
 
 export type UserUpdate = Partial<{
   passwordHash: string;
-  firstName: string;
-  lastName: string;
+  firstName: string | null;
+  lastName: string | null;
   status: UsersTable["status"];
   emailVerifiedAt: Date;
   lockedUntil: Date;

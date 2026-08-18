@@ -3,6 +3,7 @@ import { AppError, ERROR_CODES } from "../../shared/app-error.js";
 import type { Config } from "../../infrastructure/config/config.js";
 import type { RateLimiter } from "../../infrastructure/ratelimit/rate-limiter.js";
 import type { SessionService, SessionListItem } from "../../modules/session/session-service.js";
+import type { SecurityEventService } from "../../modules/security-events/security-events-service.js";
 import { createRateLimit, ipKeyFn } from "../middleware/rate-limit.js";
 import { createRequireSession, requireAuth } from "../middleware/require-session.js";
 
@@ -21,9 +22,15 @@ export interface SessionsRouterDeps {
   config: Config;
   limiter: RateLimiter;
   sessions: SessionService;
+  securityEvents?: SecurityEventService;
 }
 
-export function createSessionsRouter({ config, limiter, sessions }: SessionsRouterDeps): Router {
+export function createSessionsRouter({
+  config,
+  limiter,
+  sessions,
+  securityEvents,
+}: SessionsRouterDeps): Router {
   const router = Router();
   const requireSession = createRequireSession(sessions, config);
 
@@ -52,6 +59,13 @@ export function createSessionsRouter({ config, limiter, sessions }: SessionsRout
       if (!revoked) {
         throw new AppError(ERROR_CODES.NOT_FOUND, "Session not found");
       }
+      await securityEvents?.record({
+        eventType: "SESSION_REVOKED",
+        userId: user.id,
+        ipAddress: req.ip,
+        userAgent: req.header("user-agent"),
+        correlationId: req.requestId,
+      });
       if (id === session.id) {
         res.clearCookie("ap_session", { path: "/" });
         res.clearCookie("__Host-ap_session", { path: "/", secure: config.cookieSecure });
@@ -63,7 +77,12 @@ export function createSessionsRouter({ config, limiter, sessions }: SessionsRout
   return router;
 }
 
-export function createSessionsAllRouter({ config, limiter, sessions }: SessionsRouterDeps): Router {
+export function createSessionsAllRouter({
+  config,
+  limiter,
+  sessions,
+  securityEvents,
+}: SessionsRouterDeps): Router {
   const router = Router();
   const requireSession = createRequireSession(sessions, config);
 
@@ -74,6 +93,15 @@ export function createSessionsAllRouter({ config, limiter, sessions }: SessionsR
     async (req, res) => {
       const { user } = requireAuth(req);
       await sessions.revokeAll(user.id);
+      await securityEvents?.record({
+        eventType: "ALL_SESSIONS_REVOKED",
+        userId: user.id,
+        ipAddress: req.ip,
+        userAgent: req.header("user-agent"),
+        correlationId: req.requestId,
+      });
+      res.clearCookie("ap_session", { path: "/" });
+      res.clearCookie("__Host-ap_session", { path: "/", secure: config.cookieSecure });
       res.status(204).end();
     },
   );

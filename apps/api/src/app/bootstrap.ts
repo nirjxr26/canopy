@@ -18,11 +18,13 @@ import {
   createSmtpEmailProvider,
   OUTBOX_POLL_MS,
 } from "../modules/email/email-service.js";
+import { createSecurityEventRepository } from "../modules/security-events/security-events-repository.js";
+import { createSecurityEventService } from "../modules/security-events/security-events-service.js";
+import { validateJwtKey } from "../modules/jwt/jwt-service.js";
 import { createApp } from "./app.js";
 
 const config = configFromEnv();
 const logger = createLogger(config.logLevel);
-
 const { pool, db } = createDb(config);
 const hasher = createPasswordHasher({
   memoryCostKiB: config.argonMemoryKib,
@@ -57,6 +59,15 @@ const emails = createEmailService({
   keys: config.mfaEncryptionKeys,
   logger,
 });
+const securityEvents = createSecurityEventService(createSecurityEventRepository(db), logger);
+
+if (config.jwtPrivateKey) {
+  await validateJwtKey(config.jwtPrivateKey).catch((err: unknown) => {
+    console.error("startup failed:", err);
+    process.exit(1);
+  });
+}
+
 const app = createApp({
   config,
   logger,
@@ -70,10 +81,15 @@ const app = createApp({
   mfa,
   provider: emailProvider,
   keys: config.mfaEncryptionKeys,
+  securityEvents,
 });
 
 const server = app.listen(config.port, () => {
   logger.info({ port: config.port, env: config.nodeEnv }, "api listening");
+});
+server.on("error", (err) => {
+  logger.error({ err }, "server error");
+  void shutdown("server-error");
 });
 
 const emailWorker = setInterval(() => {
@@ -97,24 +113,12 @@ async function shutdown(signal: string): Promise<void> {
     process.exit(1);
   }, 10_000);
   forceExitTimer.unref();
-  try {
-    server.close(async (closeErr) => {
-      await limiter.dispose();
-      await pool.end();
-      process.exit(closeErr ? 1 : 0);
-    });
-  } catch {
-    // server never started listening (e.g. EADDRINUSE)
+  server.close(async (closeErr) => {
     await limiter.dispose();
     await pool.end();
-    process.exit(1);
-  }
+    process.exit(closeErr ? 1 : 0);
+  });
 }
-
-server.on("error", (err) => {
-  logger.error({ err }, "server error");
-  void shutdown("server-error");
-});
 
 process.on("SIGINT", () => void shutdown("SIGINT"));
 process.on("SIGTERM", () => void shutdown("SIGTERM"));

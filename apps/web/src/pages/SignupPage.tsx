@@ -15,6 +15,7 @@ export function SignupPage() {
   const navigate = useNavigate();
   const { pending, error, run } = useSubmit();
   const [email, setEmail] = useState("");
+  const [fullName, setFullName] = useState("");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [fieldErrors, setFieldErrors] = useState<{ email?: string; password?: string; confirm?: string }>({});
@@ -62,7 +63,7 @@ export function SignupPage() {
     event.preventDefault();
     if (!validate()) return;
     void run(async () => {
-      const result = await signup({ email, password });
+      const result = await signup({ email, password, firstName: fullName.trim() || undefined });
       setDevLink(result.devEmailLink ?? null);
       setDone(true);
     });
@@ -73,6 +74,13 @@ export function SignupPage() {
       <Card title="Create your account" subtitle="Sign up in under a minute. No credit card required.">
         {error ? <Alert tone="error">{error}</Alert> : null}
         <form onSubmit={onSubmit} noValidate>
+          <TextField
+            label="Full name"
+            autoComplete="name"
+            placeholder="Jane Doe"
+            value={fullName}
+            onChange={(e) => setFullName(e.target.value)}
+          />
           <TextField
             label="Email"
             type="email"
