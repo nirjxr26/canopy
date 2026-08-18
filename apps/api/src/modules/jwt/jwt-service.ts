@@ -27,11 +27,18 @@ export interface JwtPayload {
   exp: number;
 }
 
+let cachedKeyPromise: Promise<jose.CryptoKey | jose.KeyObject> | undefined;
+
+export async function validateJwtKey(privateKey: string): Promise<void> {
+  await jose.importPKCS8(privateKey, "RS256", { extractable: true });
+}
+
 export async function makeJwtKey(config: Pick<Config, "jwtPrivateKey" | "jwtKid">): Promise<jose.CryptoKey | jose.KeyObject> {
   if (!config.jwtPrivateKey) {
     throw new Error("JWT private key not configured");
   }
-  return jose.importPKCS8(config.jwtPrivateKey, "RS256", { extractable: true });
+  cachedKeyPromise ??= jose.importPKCS8(config.jwtPrivateKey, "RS256", { extractable: true });
+  return cachedKeyPromise;
 }
 
 export async function mintJwt(

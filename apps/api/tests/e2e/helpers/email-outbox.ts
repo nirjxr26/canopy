@@ -114,5 +114,5 @@ export function extractTokenFromEmail(row: OutboxDbRow): string {
   if (match === null) {
     throw new Error(`no token found in email body for ${row.recipient} / ${row.subject}`);
   }
-  return match[1];
+  return match[1]!;
 }

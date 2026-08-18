@@ -1,8 +1,8 @@
 import { AppError, ERROR_CODES } from "../../shared/app-error.js";
-import { USER_STATUSES } from "../../shared/user-status.js";
 import type { UserStatus } from "../../shared/user-status.js";
 
-export { USER_STATUSES, UserStatus };
+export { USER_STATUSES } from "../../shared/user-status.js";
+export type { UserStatus };
 
 export type LoginBlockReason =
   | "PENDING_VERIFICATION"

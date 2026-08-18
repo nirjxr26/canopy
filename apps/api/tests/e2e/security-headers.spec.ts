@@ -1,7 +1,6 @@
 import { test, expect } from '@playwright/test';
 
 test.describe('Automated API Security & Origin Validation', () => {
-  const allowedOrigin = 'http://localhost:3000';
   const disallowedOrigin = 'http://malicious-attacker.com';
 
   test('CSRF Defense: state-changing POST request with unauthorized Origin returns 403 INVALID_ORIGIN', async ({ request }) => {

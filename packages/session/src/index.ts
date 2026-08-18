@@ -9,6 +9,10 @@ export interface UserAuthContext {
   expiresAt?: string;
 }
 
+export interface Logger {
+  error(message: string, meta?: Record<string, unknown>): void;
+}
+
 declare global {
   namespace Express {
     interface Request {
@@ -21,11 +25,50 @@ export interface RequireSessionOptions {
   apiBaseUrl: string;
   serviceApiKey: string;
   cookieName?: string;
+  requestTimeoutMs?: number;
+  logger?: Logger;
+}
+
+const USER_STATUSES = new Set(["PENDING_VERIFICATION", "ACTIVE", "SUSPENDED", "LOCKED", "DEACTIVATED"]);
+
+function isValidEmail(email: string): boolean {
+  const at = email.indexOf("@");
+  if (at <= 0 || email.indexOf("@", at + 1) !== -1 || /\s/.test(email)) {
+    return false;
+  }
+  const rest = email.slice(at + 1);
+  for (let i = 1; i <= rest.length - 2; i++) {
+    if (rest[i] === ".") {
+      return true;
+    }
+  }
+  return false;
+}
+
+function validateApiBaseUrl(apiBaseUrl: string): void {
+  let url: URL;
+  try {
+    url = new URL(apiBaseUrl);
+  } catch {
+    throw new Error("apiBaseUrl must use https, or http only for loopback hosts");
+  }
+  if (url.protocol === "https:") {
+    return;
+  }
+  if (url.protocol === "http:") {
+    const hostname = url.hostname.toLowerCase();
+    if (hostname === "localhost" || hostname === "::1" || hostname === "[::1]" || hostname.startsWith("127.")) {
+      return;
+    }
+  }
+  throw new Error("apiBaseUrl must use https, or http only for loopback hosts");
 }
 
 /** Express middleware for consumer backends using session cookie introspection */
 export function requireSession(options: RequireSessionOptions) {
+  validateApiBaseUrl(options.apiBaseUrl);
   const cookieName = options.cookieName ?? "__Host-ap_session";
+  const requestTimeoutMs = options.requestTimeoutMs ?? 5000;
 
   return async function sessionMiddleware(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
@@ -57,6 +100,7 @@ export function requireSession(options: RequireSessionOptions) {
           "X-Service-Key": options.serviceApiKey,
         },
         body: JSON.stringify({ sessionSecret }),
+        signal: AbortSignal.timeout(requestTimeoutMs),
       });
 
       if (!response.ok) {
@@ -69,6 +113,7 @@ export function requireSession(options: RequireSessionOptions) {
         userId?: string;
         email?: string;
         emailVerified?: boolean;
+        status?: string;
         expiresAt?: string;
       };
 
@@ -81,7 +126,7 @@ export function requireSession(options: RequireSessionOptions) {
         userId: data.userId,
         email: data.email,
         emailVerified: data.emailVerified ?? false,
-        status: "ACTIVE",
+        status: data.status ?? "ACTIVE",
         expiresAt: data.expiresAt,
       };
 
@@ -98,11 +143,57 @@ export interface VerifyJwtOptions {
   issuer: string;
   audience: string;
   clockToleranceSeconds?: number;
+  logger?: Logger;
+}
+
+function isValidClaims(
+  payload: jose.JWTPayload,
+): payload is {
+  sub: string;
+  email: string;
+  email_verified: boolean;
+  status: string;
+  jti: string;
+} {
+  return (
+    typeof payload.sub === "string" &&
+    payload.sub.length > 0 &&
+    typeof payload.email === "string" &&
+    isValidEmail(payload.email) &&
+    typeof payload.email_verified === "boolean" &&
+    typeof payload.status === "string" &&
+    USER_STATUSES.has(payload.status) &&
+    typeof payload.jti === "string" &&
+    payload.jti.length > 0
+  );
+}
+
+function describeUnknown(value: unknown): unknown {
+  if (typeof value === "string") {
+    return value;
+  }
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return "[circular object]";
+  }
+}
+
+function describeError(err: unknown): unknown {
+  if (!(err instanceof Error)) {
+    return describeUnknown(err);
+  }
+  const info: Record<string, unknown> = { name: err.name, message: err.message };
+  if (err.cause !== undefined) {
+    info.cause = describeError(err.cause);
+  }
+  return info;
 }
 
 /** Express middleware for consumer backends validating RS256 Bearer JWTs */
 export function verifyJwt(options: VerifyJwtOptions) {
   const tolerance = options.clockToleranceSeconds ?? 60;
+  const logger = options.logger;
 
   return async function jwtMiddleware(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
@@ -135,17 +226,21 @@ export function verifyJwt(options: VerifyJwtOptions) {
         throw new Error("verifyJwt requires either publicKey or jwksUrl");
       }
 
+      if (!isValidClaims(payload)) {
+        throw new Error("Invalid token claims");
+      }
+
       req.auth = {
-        userId: (payload.sub as string) ?? "",
-        email: (payload.email as string) ?? "",
-        emailVerified: (payload.email_verified as boolean) ?? false,
-        status: (payload.status as string) ?? "ACTIVE",
+        userId: payload.sub,
+        email: payload.email,
+        emailVerified: payload.email_verified,
+        status: payload.status,
       };
 
       next();
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Invalid access token";
-      res.status(401).json({ error: { code: "UNAUTHENTICATED", message } });
+      logger?.error("JWT verification failed", { err: describeError(err) });
+      res.status(401).json({ error: { code: "UNAUTHENTICATED", message: "Invalid access token" } });
     }
   };
 }

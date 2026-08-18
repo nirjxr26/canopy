@@ -1,8 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { authApi, ApiError, type User } from "./api";
 
-const USER_STORAGE_KEY = "auuth.user";
-
 interface AuthContextValue {
   user: User | null;
   loading: boolean;
@@ -17,26 +15,12 @@ interface AuthContextValue {
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
-function readStoredUser(): User | null {
-  try {
-    const raw = localStorage.getItem(USER_STORAGE_KEY);
-    return raw ? (JSON.parse(raw) as User) : null;
-  } catch {
-    return null;
-  }
-}
-
 export function AuthProvider({ children }: { readonly children: ReactNode }) {
-  const [user, setUser] = useState<User | null>(() => readStoredUser());
+  const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
 
   const updateUser = useCallback((next: User | null) => {
     setUser(next);
-    if (next === null) {
-      localStorage.removeItem(USER_STORAGE_KEY);
-    } else {
-      localStorage.setItem(USER_STORAGE_KEY, JSON.stringify(next));
-    }
   }, []);
 
   useEffect(() => {
@@ -72,10 +56,9 @@ export function AuthProvider({ children }: { readonly children: ReactNode }) {
   const signup = useCallback(
     async (input: { email: string; password: string; firstName?: string; lastName?: string }) => {
       const result = await authApi.signup(input);
-      updateUser(result.user);
       return result;
     },
-    [updateUser],
+    [],
   );
 
   const logout = useCallback(async () => {

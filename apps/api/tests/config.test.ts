@@ -43,18 +43,24 @@ describe("config", () => {
     expect(() => load({ FRONTEND_URL: "not-a-url" })).toThrow(ConfigError);
   });
 
+  it("fails fast when ALLOWED_ORIGINS contains a non-URL entry", () => {
+    expect(() => load({ ALLOWED_ORIGINS: "https://app.example.com,garbage" })).toThrow(ConfigError);
+  });
+
   it("fails fast when MFA_ENCRYPTION_KEYS is malformed", () => {
     expect(() => load({ MFA_ENCRYPTION_KEYS: "not-a-key-list" })).toThrow(ConfigError);
   });
 
   it("fails fast on duplicate key versions", () => {
-    expect(() =>
-      load({ MFA_ENCRYPTION_KEYS: "v1:YWJjZA==,v1:ZGVmZw==" }),
-    ).toThrow(ConfigError);
+    const key = Buffer.alloc(32, 1).toString("base64");
+    const otherKey = Buffer.alloc(32, 2).toString("base64");
+    expect(() => load({ MFA_ENCRYPTION_KEYS: `v1:${key},v1:${otherKey}` })).toThrow(ConfigError);
   });
 
   it("parses ordered key list newest-first", () => {
-    const config = load({ MFA_ENCRYPTION_KEYS: "v2:YWJjZA==,v1:ZGVmZw==" });
+    const key = Buffer.alloc(32, 1).toString("base64");
+    const otherKey = Buffer.alloc(32, 2).toString("base64");
+    const config = load({ MFA_ENCRYPTION_KEYS: `v2:${key},v1:${otherKey}` });
     expect(config.mfaEncryptionKeys.map((e) => e.version)).toEqual([2, 1]);
   });
 
@@ -66,6 +72,13 @@ describe("config", () => {
 
   it("rejects MFA encryption keys that are not valid base64", () => {
     expect(() => load({ MFA_ENCRYPTION_KEYS: "v1:!!not-base64!!" })).toThrow(/not valid base64/);
+  });
+
+  it("rejects MFA encryption keys that do not decode to 32 bytes", () => {
+    const shortKey = Buffer.alloc(16, 1).toString("base64");
+    expect(() => load({ MFA_ENCRYPTION_KEYS: `v1:${shortKey}` })).toThrow(
+      /must decode to exactly 32 bytes/,
+    );
   });
 
   it("fails fast on unknown rate limiter backend", () => {
@@ -112,6 +125,8 @@ describe("config", () => {
   describe("production fail-fast", () => {
     const HARDENED: NodeJS.ProcessEnv = {
       NODE_ENV: "production",
+      FRONTEND_URL: "https://localhost:5173",
+      AUTH_BASE_URL: "https://localhost:3000",
       COOKIE_SECURE: "true",
       HTTPS_ENFORCED: "true",
       EMAIL_PROVIDER: "smtp",
@@ -145,6 +160,26 @@ describe("config", () => {
       expect(config.cookieSecure).toBe(true);
       expect(config.rateLimiterBackend).toBe("redis");
       expect(config.emailProvider).toBe("smtp");
+    });
+
+    it("refuses to start with an http FRONTEND_URL in prod", () => {
+      expect(() => load({ ...HARDENED, FRONTEND_URL: "http://prod.example.com" })).toThrow(
+        /Production environment requires HTTPS/,
+      );
+    });
+
+    it("accepts an https FRONTEND_URL in prod", () => {
+      const config = load({ ...HARDENED, FRONTEND_URL: "https://prod.example.com" });
+      expect(config.frontendUrl).toBe("https://prod.example.com");
+    });
+
+    it("refuses to start with an http ALLOWED_ORIGINS entry in prod", () => {
+      expect(() =>
+        load({
+          ...HARDENED,
+          ALLOWED_ORIGINS: "https://app.example.com,http://insecure.example.com",
+        }),
+      ).toThrow(/Production environment requires HTTPS/);
     });
   });
 });

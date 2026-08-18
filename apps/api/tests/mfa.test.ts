@@ -54,6 +54,7 @@ interface TestHarness {
   db: Kysely<Database>;
   pool: { end(): Promise<void> };
   users: ReturnType<typeof createUserService>;
+  mfa: ReturnType<typeof createMfaService>;
   provider: RecordingProvider;
 }
 
@@ -100,7 +101,7 @@ function makeApp(): TestHarness {
     provider,
     keys: config.mfaEncryptionKeys,
   });
-  return { app, db, pool, users, provider };
+  return { app, db, pool, users, mfa, provider };
 }
 
 function cookieOf(res: request.Response): string {
@@ -179,7 +180,7 @@ describeDb("mfa endpoints", () => {
         .post(`${MFA_BASE}/enroll`)
         .set("Origin", ORIGIN)
         .set("Cookie", cookie);
-      const { challenge, secret } = enrollRes.body;
+      const { challenge } = enrollRes.body;
       const res = await request(harness.app)
         .post(`${MFA_BASE}/confirm`)
         .set("Origin", ORIGIN)
@@ -379,7 +380,7 @@ describeDb("mfa endpoints", () => {
         .set("Origin", ORIGIN)
         .send({ mfaToken, code });
       expect(res.status).toBe(200);
-      const setCookie = res.headers["set-cookie"][0];
+      const setCookie = res.headers["set-cookie"]![0];
       expect(setCookie).not.toContain("Max-Age");
     });
 
@@ -562,6 +563,59 @@ describeDb("mfa endpoints", () => {
       const loginRes2 = await login(harness.app, "mfa-disable-2@example.com");
       expect(loginRes2.body.user).toBeDefined();
       expect(loginRes2.body.mfaRequired).toBeUndefined();
+    });
+
+    it("clears both the credential and recovery codes, and re-enabling works afterwards", async () => {
+      await activeUser(harness.app, harness, "mfa-disable-3@example.com");
+      const loginRes = await login(harness.app, "mfa-disable-3@example.com");
+      const cookie = cookieOf(loginRes);
+      const enrollRes = await request(harness.app)
+        .post(`${MFA_BASE}/enroll`)
+        .set("Origin", ORIGIN)
+        .set("Cookie", cookie);
+      const { challenge, secret } = enrollRes.body;
+      const code = generateTotpCode(secret);
+      await request(harness.app)
+        .post(`${MFA_BASE}/confirm`)
+        .set("Origin", ORIGIN)
+        .set("Cookie", cookie)
+        .send({ challenge, code });
+      const user = await harness.users.findByEmail("mfa-disable-3@example.com");
+      const repo = createMfaRepository(harness.db);
+      expect(await repo.findEnabledByUser(user!.id)).not.toBeNull();
+      const codesBefore = await harness.db
+        .selectFrom("recovery_codes")
+        .selectAll()
+        .where("user_id", "=", user!.id)
+        .execute();
+      expect(codesBefore).toHaveLength(10);
+
+      const disableRes = await request(harness.app)
+        .post(`${MFA_BASE}/disable`)
+        .set("Origin", ORIGIN)
+        .set("Cookie", cookie)
+        .send({ currentPassword: PASSWORD, code: generateTotpCode(secret) });
+      expect(disableRes.status).toBe(204);
+
+      expect(await repo.findEnabledByUser(user!.id)).toBeNull();
+      const codesAfter = await harness.db
+        .selectFrom("recovery_codes")
+        .selectAll()
+        .where("user_id", "=", user!.id)
+        .execute();
+      expect(codesAfter).toHaveLength(0);
+
+      const enroll2 = await harness.mfa.enroll(user!);
+      const confirm2 = await harness.mfa.confirm(
+        user!,
+        enroll2.challenge,
+        generateTotpCode(enroll2.secret),
+      );
+      expect(confirm2.recoveryCodes.length).toBe(10);
+      expect(await repo.findEnabledByUser(user!.id)).not.toBeNull();
+      const meRes = await request(harness.app).get(`${AUTH_BASE}/me`).set("Cookie", cookie);
+      expect(meRes.status).toBe(200);
+      expect(meRes.body.user.mfaEnabled).toBe(true);
     });
   });
 });

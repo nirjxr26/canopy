@@ -3,8 +3,7 @@ import { pinoHttp } from "pino-http";
 import type pino from "pino";
 import type { Kysely } from "kysely";
 import { randomUUID } from "node:crypto";
-import type { Config } from "../infrastructure/config/config.js";
-import type { EncryptionKeyEntry } from "../infrastructure/config/config.js";
+import type { Config, EncryptionKeyEntry } from "../infrastructure/config/config.js";
 import type { PasswordHasher } from "../infrastructure/crypto/password.js";
 import type { Database } from "../infrastructure/db/database.js";
 import type { RateLimiter } from "../infrastructure/ratelimit/rate-limiter.js";
@@ -13,6 +12,10 @@ import type { SessionService } from "../modules/session/session-service.js";
 import type { TokenService } from "../modules/identity/token-service.js";
 import type { EmailService, EmailProvider } from "../modules/email/email-service.js";
 import type { MfaService } from "../modules/mfa/mfa-service.js";
+import {
+  createNoopSecurityEventService,
+  type SecurityEventService,
+} from "../modules/security-events/security-events-service.js";
 import { createAuthFlows } from "../modules/identity/auth-flows.js";
 import { sanitizeUrl } from "../infrastructure/logging/logger.js";
 import { requestIdMiddleware } from "./middleware/request-id.js";
@@ -39,16 +42,43 @@ export interface AppDeps {
   mfa: MfaService;
   provider: EmailProvider;
   keys: readonly EncryptionKeyEntry[];
+  securityEvents?: SecurityEventService;
 }
 
 export function createApp(deps: AppDeps): express.Express {
-  const { config, logger, db, hasher, limiter, users, sessions, tokens, emails, mfa, provider, keys } = deps;
+  const {
+    config,
+    logger,
+    db,
+    hasher,
+    limiter,
+    users,
+    sessions,
+    tokens,
+    emails,
+    mfa,
+    provider,
+    keys,
+    securityEvents = createNoopSecurityEventService(),
+  } = deps;
   const app = express();
   const flows = createAuthFlows({ db, hasher, config, provider, keys, logger });
 
   app.disable("x-powered-by");
   if (config.trustProxy > 0) {
     app.set("trust proxy", config.trustProxy);
+  }
+
+  if (config.httpsEnforced) {
+    app.use((req, res, next) => {
+      if (!req.secure) {
+        res.status(403).json({
+          error: { code: "HTTPS_REQUIRED", message: "HTTPS is required" },
+        });
+        return;
+      }
+      next();
+    });
   }
 
   app.use(requestIdMiddleware);
@@ -98,18 +128,21 @@ export function createApp(deps: AppDeps): express.Express {
   app.use("/", createHealthRouter(db));
   app.use(
     "/api/v1/auth",
-    createAuthRouter({ config, hasher, limiter, sessions, users, tokens, flows, mfa }),
+    createAuthRouter({ config, hasher, limiter, sessions, users, tokens, flows, mfa, securityEvents }),
   );
   app.use(
     "/api/v1/auth",
-    createRecoveryRouter({ config, limiter, users, tokens, emails, flows, mfa }),
+    createRecoveryRouter({ config, limiter, users, tokens, emails, flows, mfa, securityEvents }),
   );
   app.use(
     "/api/v1/auth",
-    createMfaRouter({ config, hasher, limiter, sessions, users, tokens, mfa }),
+    createMfaRouter({ config, hasher, limiter, sessions, users, tokens, mfa, securityEvents }),
   );
-  app.use("/api/v1/auth/sessions/revoke-all", createSessionsAllRouter({ config, limiter, sessions }));
-  app.use("/api/v1/auth/sessions", createSessionsRouter({ config, limiter, sessions }));
+  app.use(
+    "/api/v1/auth/sessions/revoke-all",
+    createSessionsAllRouter({ config, limiter, sessions, securityEvents }),
+  );
+  app.use("/api/v1/auth/sessions", createSessionsRouter({ config, limiter, sessions, securityEvents }));
 
   app.use(notFoundHandler);
   app.use(createErrorHandler(logger));

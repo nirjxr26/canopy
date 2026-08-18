@@ -6,12 +6,12 @@ export interface RateLimitSpec {
 export const DEFAULT_RATE_LIMITS = {
   loginIp: { limit: 20, windowMs: 60_000 },
   loginFailed: { limit: 5, windowMs: 900_000 },
+  loginAccount: { limit: 5, windowMs: 900_000 },
   signup: { limit: 5, windowMs: 3_600_000 },
   forgotPassword: { limit: 5, windowMs: 3_600_000 },
   resetPassword: { limit: 5, windowMs: 3_600_000 },
   resendVerification: { limit: 3, windowMs: 3_600_000 },
   verifyEmail: { limit: 10, windowMs: 3_600_000 },
-  mfaVerifyFailed: { limit: 5, windowMs: 900_000 },
   changePassword: { limit: 5, windowMs: 900_000 },
   introspect: { limit: 600, windowMs: 60_000 },
   tokens: { limit: 10, windowMs: 60_000 },

@@ -14,7 +14,7 @@ test.describe('Automated Session Management API (List Sessions -> Revoke Specifi
 
   test('Session lifecycle and revocation management', async ({ request }) => {
     // 1. Signup user & verify email (token read from outbox — provider-agnostic)
-    const signupRes = await request.post('/api/v1/auth/signup', {
+    await request.post('/api/v1/auth/signup', {
       data: { email: testEmail, password: testPassword, firstName: 'Session', lastName: 'User' },
       headers: { Origin: origin },
     });

@@ -1,10 +1,13 @@
 import type { ReactNode } from "react";
+import { Logo } from "./Logo";
+import { Sidebar } from "./Sidebar";
 
-export function Logo() {
+export function AppShell({ children }: Readonly<{ children: ReactNode }>) {
   return (
-    <span className="inline-flex items-center text-text text-3xl font-bold tracking-tight">
-      Sentinel<span className="text-accent">X</span>
-    </span>
+    <div className="min-h-dvh flex flex-col md:flex-row">
+      <Sidebar />
+      <main className="flex-1 min-w-0 px-5 py-6 md:px-10 md:py-10">{children}</main>
+    </div>
   );
 }
 

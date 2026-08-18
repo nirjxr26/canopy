@@ -1,6 +1,6 @@
-import Redis from "ioredis";
+import { Redis } from "ioredis";
 import { describe, expect, it } from "vitest";
-import { InMemoryRateLimiter } from "../src/infrastructure/ratelimit/memory-rate-limiter.js";
+import { InMemoryRateLimiter, MAX_ENTRIES } from "../src/infrastructure/ratelimit/memory-rate-limiter.js";
 import { RedisRateLimiter } from "../src/infrastructure/ratelimit/redis-rate-limiter.js";
 import { runRateLimiterSuite } from "./rate-limiter.suite.js";
 import { probeRedis, TEST_REDIS_URL } from "./helpers/redis.js";
@@ -15,6 +15,9 @@ runRateLimiterSuite("memory", async () => {
 describe("rate limiter (redis fail-closed)", () => {
   it("denies requests when redis errors instead of failing open", async () => {
     const client = {
+      eval: async () => {
+        throw new Error("connection refused");
+      },
       incr: async () => {
         throw new Error("connection refused");
       },
@@ -30,7 +33,7 @@ describe("rate limiter (redis fail-closed)", () => {
 });
 
 describe("in-memory limiter sweep", () => {
-  it("evicts entries whose window is older than STALE_WINDOW_MS", async () => {
+  it("evicts entries whose window has elapsed", async () => {
     let now = 0;
     const limiter = new InMemoryRateLimiter({ now: () => now });
     await limiter.check("k-a", 3, 3_600_000);
@@ -49,6 +52,30 @@ describe("in-memory limiter sweep", () => {
     now += 60_000;
     await limiter.check("k-b", 3, 3_600_000);
     expect(limiter.size).toBe(2);
+    await limiter.dispose();
+  });
+
+  it("keeps entries with windows longer than 1h after an hour passes", async () => {
+    let now = 0;
+    const limiter = new InMemoryRateLimiter({ now: () => now });
+    await limiter.check("k-24h", 3, 86_400_000);
+    now += 3_600_000;
+    await limiter.check("k-trigger", 3, 86_400_000);
+    expect(limiter.size).toBe(2);
+    await limiter.dispose();
+  });
+});
+
+describe("in-memory limiter capacity", () => {
+  it("stays at or below MAX_ENTRIES under high-cardinality inserts", async () => {
+    let now = 0;
+    const limiter = new InMemoryRateLimiter({ now: () => now });
+    let maxSize = 0;
+    for (let i = 0; i < 10_500; i++) {
+      await limiter.check(`k-${i}`, 3, 60_000);
+      maxSize = Math.max(maxSize, limiter.size);
+    }
+    expect(maxSize).toBeLessThanOrEqual(MAX_ENTRIES);
     await limiter.dispose();
   });
 });

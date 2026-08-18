@@ -312,7 +312,7 @@ All event types from §15 recorded to `security_events` — a separate stream fr
 | `DATABASE_URL` | required |
 | `DB_POOL_MIN` / `DB_POOL_MAX` | pool sizing (defaults 2 / 10); tuned at load, no code change |
 | `FRONTEND_URL`, `AUTH_BASE_URL`, `ALLOWED_ORIGINS` | origin/CSRF + link building |
-| `COOKIE_DOMAIN`, `COOKIE_SECURE`, `SESSION_EXPIRY_DAYS` | cookie spec (§5); secure forced in prod |
+| `COOKIE_DOMAIN`, `COOKIE_SECURE`, `SESSION_EXPIRY_DAYS`, `SESSION_IDLE_HOURS`, `MAX_ACTIVE_SESSIONS` | cookie spec (§5); idle timeout + active-session cap; secure forced in prod |
 | `SESSION_SECRET` | accepted but **not used** (§11 #1); present only for forward-compat |
 | `MFA_ENCRYPTION_KEYS` | ordered `v2:base64...,v1:base64...`; newest = encrypt key; prod requires ≥1 |
 | `ARGON_MEMORY_KIB`, `ARGON_TIME_COST`, `ARGON_PARALLELISM`, `ARGON_HASH_LENGTH` | centralized hashing params (§7 of spec) |

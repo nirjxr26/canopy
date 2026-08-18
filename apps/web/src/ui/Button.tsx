@@ -14,7 +14,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
   
   const variantClasses = variant === "primary"
     ? "bg-accent text-accent-contrast hover:bg-accent-hover"
-    : "bg-transparent text-accent hover:bg-accent/10 px-3 py-2 font-medium";
+    : "bg-transparent text-accent hover:bg-hover px-3 py-2 font-medium";
 
   const blockClasses = block ? "w-full" : "";
 

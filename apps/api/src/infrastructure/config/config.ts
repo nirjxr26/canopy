@@ -14,8 +14,8 @@ const intFrom = (min: number, max?: number) =>
   z.preprocess(
     (v) => (typeof v === "number" ? v : Number(v)),
     max === undefined
-      ? z.number({ error: "expected a number" }).int().finite().min(min)
-      : z.number({ error: "expected a number" }).int().finite().min(min).max(max),
+      ? z.int({ error: "expected a number" }).min(min)
+      : z.int({ error: "expected a number" }).min(min).max(max),
   );
 
 const keyList = z.string().min(1);
@@ -44,6 +44,8 @@ const envSchema = z.object({
   COOKIE_DOMAIN: z.string().optional(),
   COOKIE_SECURE: boolFromString.default(false),
   SESSION_EXPIRY_DAYS: intFrom(1, 90).default(30),
+  SESSION_IDLE_HOURS: intFrom(1, 720).default(12),
+  MAX_ACTIVE_SESSIONS: intFrom(1, 100).default(5),
   SESSION_SECRET: z.string().optional(),
   MFA_ENCRYPTION_KEYS: keyList,
   ARGON_MEMORY_KIB: intFrom(1).default(19456),
@@ -91,6 +93,8 @@ export interface Config {
   readonly cookieDomain: string | undefined;
   readonly cookieSecure: boolean;
   readonly sessionExpiryDays: number;
+  readonly sessionIdleHours: number;
+  readonly maxActiveSessions: number;
   readonly sessionSecret: string | undefined;
   readonly mfaEncryptionKeys: readonly EncryptionKeyEntry[];
   readonly argonMemoryKib: number;
@@ -128,8 +132,14 @@ function parseKeyList(raw: string): EncryptionKeyEntry[] {
         throw new ConfigError(`MFA_ENCRYPTION_KEYS entry "${part}" must look like v2:base64...`);
       }
       const key = match[2]!;
-      if (Buffer.from(key, "base64").toString("base64") !== key) {
+      const decoded = Buffer.from(key, "base64");
+      if (decoded.toString("base64") !== key) {
         throw new ConfigError(`MFA_ENCRYPTION_KEYS entry "${part}" is not valid base64`);
+      }
+      if (decoded.length !== 32) {
+        throw new ConfigError(
+          `MFA_ENCRYPTION_KEYS entry "${part}" must decode to exactly 32 bytes (AES-256)`,
+        );
       }
       return { version: Number(match[1]!), key };
     });
@@ -160,6 +170,49 @@ function requireProdSecrets(parsed: z.infer<typeof envSchema>): void {
   }
 }
 
+function requireProdHttps(parsed: z.infer<typeof envSchema>): void {
+  if (parsed.NODE_ENV !== "production") return;
+  const failures: string[] = [];
+  const check = (label: string, value: string) => {
+    try {
+      if (new URL(value).protocol !== "https:") failures.push(label);
+    } catch {
+      failures.push(`${label} (not a valid URL)`);
+    }
+  };
+  check("FRONTEND_URL", parsed.FRONTEND_URL);
+  check("AUTH_BASE_URL", parsed.AUTH_BASE_URL);
+  const origins = parsed.ALLOWED_ORIGINS
+    ? parsed.ALLOWED_ORIGINS.split(",").map((s) => s.trim()).filter(Boolean)
+    : [];
+  origins.forEach((origin) => check(`ALLOWED_ORIGINS entry "${origin}"`, origin));
+  if (failures.length > 0) {
+    throw new ConfigError(
+      `Production environment requires HTTPS URLs. Fix: ${failures.join(", ")}. Refusing to start.`,
+    );
+  }
+}
+
+function parseAllowedOrigins(parsed: z.infer<typeof envSchema>): string[] {
+  const origins = parsed.ALLOWED_ORIGINS
+    ? parsed.ALLOWED_ORIGINS.split(",").map((s) => s.trim()).filter(Boolean)
+    : [parsed.FRONTEND_URL, parsed.AUTH_BASE_URL];
+  const invalid = origins.filter((origin) => {
+    try {
+      new URL(origin);
+      return false;
+    } catch {
+      return true;
+    }
+  });
+  if (invalid.length > 0) {
+    throw new ConfigError(
+      `Invalid configuration: ALLOWED_ORIGINS entries must be valid URLs: ${invalid.join(", ")}`,
+    );
+  }
+  return origins;
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv): Config {
   const result = envSchema.safeParse(env);
   if (!result.success) {
@@ -172,13 +225,10 @@ export function loadConfig(env: NodeJS.ProcessEnv): Config {
     throw new ConfigError('EMAIL_PROVIDER=smtp requires SMTP_URL (e.g. smtps://user:pass@smtp.example.com:465)');
   }
   requireProdSecrets(parsed);
+  requireProdHttps(parsed);
 
   const mfaEncryptionKeys = parseKeyList(parsed.MFA_ENCRYPTION_KEYS);
-  const allowedOrigins = (
-    parsed.ALLOWED_ORIGINS
-      ? parsed.ALLOWED_ORIGINS.split(",").map((s) => s.trim()).filter(Boolean)
-      : [parsed.FRONTEND_URL, parsed.AUTH_BASE_URL]
-  );
+  const allowedOrigins = parseAllowedOrigins(parsed);
 
   let rateLimits: Record<RateLimitName, RateLimitSpec>;
   try {
@@ -203,6 +253,8 @@ export function loadConfig(env: NodeJS.ProcessEnv): Config {
     cookieDomain: parsed.COOKIE_DOMAIN,
     cookieSecure: parsed.COOKIE_SECURE,
     sessionExpiryDays: parsed.SESSION_EXPIRY_DAYS,
+    sessionIdleHours: parsed.SESSION_IDLE_HOURS,
+    maxActiveSessions: parsed.MAX_ACTIVE_SESSIONS,
     sessionSecret: parsed.SESSION_SECRET,
     mfaEncryptionKeys: Object.freeze(mfaEncryptionKeys),
     argonMemoryKib: parsed.ARGON_MEMORY_KIB,

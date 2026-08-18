@@ -45,7 +45,7 @@ export interface SessionService {
 export function createSessionService(
   sessions: SessionRepository,
   getUsers: { getById(id: string): Promise<UserRecord | null> },
-  config: Pick<Config, "sessionExpiryDays">,
+  config: Pick<Config, "sessionExpiryDays" | "sessionIdleHours" | "maxActiveSessions">,
 ): SessionService {
   return {
     async createSession({ userId, ipAddress, userAgent, now }) {
@@ -58,6 +58,7 @@ export function createSessionService(
         ipAddress,
         userAgent,
       });
+      await sessions.pruneExcess(userId, config.maxActiveSessions);
       return { token, session };
     },
 
@@ -71,6 +72,10 @@ export function createSessionService(
         return null;
       }
       if (session.revokedAt !== null || session.expiresAt.getTime() <= now) {
+        return null;
+      }
+      const lastUsedMs = (session.lastUsedAt ?? session.createdAt).getTime();
+      if (now - lastUsedMs > config.sessionIdleHours * 3_600_000) {
         return null;
       }
       const user = await getUsers.getById(session.userId);

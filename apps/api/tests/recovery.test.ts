@@ -471,16 +471,20 @@ describeDb("verification & recovery endpoints", () => {
       expect(res.body.error.code).toBe("INVALID_CREDENTIALS");
     });
 
-    it("changes the password and revokes other sessions", async () => {
+    it("changes the password, revokes all sessions and issues a fresh one", async () => {
       const email = "change-2@example.com";
       const cookieA = await activeSession(email);
       const cookieB = cookieOf(await login(harness.app, email));
       const res = await changePassword(cookieA, PASSWORD, NEW_PASSWORD);
       expect(res.status).toBe(204);
+      const freshCookie = cookieOf(res);
+      expect(freshCookie).not.toBe(cookieA);
       const meA = await request(harness.app).get(`${BASE_URL}/me`).set("Cookie", cookieA);
       const meB = await request(harness.app).get(`${BASE_URL}/me`).set("Cookie", cookieB);
-      expect(meA.status).toBe(200);
+      expect(meA.status).toBe(401);
       expect(meB.status).toBe(401);
+      const meFresh = await request(harness.app).get(`${BASE_URL}/me`).set("Cookie", freshCookie);
+      expect(meFresh.status).toBe(200);
       const oldLogin = await login(harness.app, email, PASSWORD);
       expect(oldLogin.status).toBe(401);
       const newLogin = await login(harness.app, email, NEW_PASSWORD);

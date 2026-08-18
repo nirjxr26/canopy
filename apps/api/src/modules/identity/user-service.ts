@@ -3,7 +3,7 @@ import { createId } from "../../infrastructure/crypto/ulid.js";
 import type { PasswordHasher } from "../../infrastructure/crypto/password.js";
 import { normalizeEmail } from "./email-normalizer.js";
 import { assertTransition } from "./account-state-policy.js";
-import type { UserRecord, UserRepository, UserWithPasswordHash } from "./user-repository.js";
+import type { UserRecord, UserRepository, UserUpdate, UserWithPasswordHash } from "./user-repository.js";
 
 export const PASSWORD_MIN_LENGTH = 12;
 export const PASSWORD_MAX_LENGTH = 128;
@@ -46,9 +46,11 @@ export interface UserService {
   register(input: RegisterInput): Promise<RegisterResult>;
   findByEmail(email: string): Promise<UserWithPasswordHash | null>;
   getById(id: string): Promise<UserRecord | null>;
+  updateProfile(id: string, input: { firstName?: string | null; lastName?: string | null }): Promise<UserRecord | null>;
   verifyEmail(id: string, now?: Date): Promise<void>;
   recordLogin(id: string, now?: Date): Promise<void>;
   updatePassword(id: string, newPassword: string): Promise<void>;
+  lockUntil(id: string, until: Date): Promise<void>;
   rehashPasswordIfNeeded(id: string, hash: string, plain: string): Promise<void>;
 }
 
@@ -144,6 +146,17 @@ export function createUserService(
       return repository.findById(id);
     },
 
+    async updateProfile(id, input) {
+      const patch: UserUpdate = { updatedAt: new Date() };
+      if (input.firstName !== undefined) patch.firstName = input.firstName;
+      if (input.lastName !== undefined) patch.lastName = input.lastName;
+      const updated = await repository.update(id, patch);
+      if (!updated) {
+        return null;
+      }
+      return repository.findById(id);
+    },
+
     verifyEmail: (id, now = new Date()) => verifyUserEmail(repository, id, now),
 
     async recordLogin(id, now = new Date()) {
@@ -157,6 +170,13 @@ export function createUserService(
       assertPasswordPolicy(newPassword);
       const passwordHash = await hasher.hash(newPassword);
       const updated = await repository.update(id, { passwordHash, updatedAt: new Date() });
+      if (!updated) {
+        throw new AppError(ERROR_CODES.NOT_FOUND, "User not found");
+      }
+    },
+
+    async lockUntil(id, until) {
+      const updated = await repository.update(id, { lockedUntil: until, updatedAt: new Date() });
       if (!updated) {
         throw new AppError(ERROR_CODES.NOT_FOUND, "User not found");
       }

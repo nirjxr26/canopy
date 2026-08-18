@@ -10,6 +10,7 @@ import type { UserService } from "../../modules/identity/user-service.js";
 import type { AuthFlows } from "../../modules/identity/auth-flows.js";
 import type { EmailService } from "../../modules/email/email-service.js";
 import type { MfaService } from "../../modules/mfa/mfa-service.js";
+import type { SecurityEventService } from "../../modules/security-events/security-events-service.js";
 import { createRateLimit, ipKeyFn } from "../middleware/rate-limit.js";
 import { toUserJson } from "./auth.js";
 
@@ -21,6 +22,7 @@ export interface RecoveryRouterDeps {
   emails: EmailService;
   flows: AuthFlows;
   mfa: MfaService;
+  securityEvents?: SecurityEventService;
 }
 
 export function createRecoveryRouter({
@@ -31,6 +33,7 @@ export function createRecoveryRouter({
   emails,
   flows,
   mfa,
+  securityEvents,
 }: RecoveryRouterDeps): Router {
   const router = Router();
 
@@ -48,6 +51,13 @@ export function createRecoveryRouter({
       if (user === null) {
         throw new AppError(ERROR_CODES.TOKEN_INVALID, "Invalid or expired verification token");
       }
+      await securityEvents?.record({
+        eventType: "EMAIL_VERIFIED",
+        userId: user.id,
+        ipAddress: req.ip,
+        userAgent: req.header("user-agent"),
+        correlationId: req.requestId,
+      });
       res.status(200).json({ user: toUserJson(user, await mfa.isEnabled(user.id)) });
     },
   );
@@ -80,6 +90,13 @@ export function createRecoveryRouter({
         if (account !== null && account.status === "ACTIVE") {
           const token = await tokens.issue("PASSWORD_RESET", account.id);
           devEmailLink = (await emails.queue("password-reset", account.email, token)).devLink;
+          await securityEvents?.record({
+            eventType: "PASSWORD_RESET_REQUESTED",
+            userId: account.id,
+            ipAddress: req.ip,
+            userAgent: req.header("user-agent"),
+            correlationId: req.requestId,
+          });
         }
       }
       res.status(200).json(devEmailLink !== null ? { devEmailLink } : {});
@@ -102,6 +119,13 @@ export function createRecoveryRouter({
       if (user === null) {
         throw new AppError(ERROR_CODES.TOKEN_INVALID, "Invalid or expired reset token");
       }
+      await securityEvents?.record({
+        eventType: "PASSWORD_CHANGED",
+        userId: user.id,
+        ipAddress: req.ip,
+        userAgent: req.header("user-agent"),
+        correlationId: req.requestId,
+      });
       res.status(200).json({ user: toUserJson(user, await mfa.isEnabled(user.id)) });
     },
   );

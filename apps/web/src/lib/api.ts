@@ -67,7 +67,7 @@ export function assertPasswordValid(password: string): string | null {
 }
 
 export function isEmail(value: string): boolean {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+  return /^[^\s@]+@[^\s@.]+\.[^\s@]+$/.test(value);
 }
 
 interface RequestOptions {
@@ -122,6 +122,9 @@ export const authApi = {
   },
   me() {
     return api<{ user: User }>("/api/v1/auth/me");
+  },
+  updateProfile(input: { firstName?: string; lastName?: string }) {
+    return api<{ user: User }>("/api/v1/auth/me", { method: "PATCH", body: input });
   },
   verifyEmail(token: string) {
     return api<{ user: User }>("/api/v1/auth/verify-email", { method: "POST", body: { token } });
