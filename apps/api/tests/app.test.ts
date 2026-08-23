@@ -39,7 +39,7 @@ function buildApp(config: ReturnType<typeof makeTestConfig>, db: Kysely<Database
   const users = createUserService(createUserRepository(db), hasher);
   const sessions = createSessionService(createSessionRepository(db), { getById: users.getById }, config);
   const tokens = createTokenService(createTokenRepository(db));
-  const mfa = createMfaService({ repository: createMfaRepository(db), tokens, db, keys: config.mfaEncryptionKeys, issuer: config.jwtIssuer });
+  const mfa = createMfaService({ repository: createMfaRepository(db), db, keys: config.mfaEncryptionKeys, issuer: config.jwtIssuer });
   const provider = { kind: "console" as const, send: async () => {} };
   const emails = createEmailService({ outbox: createOutboxRepository(db), provider, config, keys: config.mfaEncryptionKeys, logger });
   return createApp({ config, logger, db, hasher, limiter, users, sessions, tokens, emails, mfa, provider, keys: config.mfaEncryptionKeys });

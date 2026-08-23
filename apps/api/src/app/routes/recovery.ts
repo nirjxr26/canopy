@@ -67,15 +67,17 @@ export function createRecoveryRouter({
     createRateLimit(limiter, config.rateLimits.resendVerification, emailKeyFn),
     async (req, res) => {
       const body = req.body ?? {};
-      let devEmailLink: string | null = null;
       if (typeof body.email === "string" && body.email.trim() !== "") {
         const account = await users.findByEmail(body.email);
         if (account !== null && account.status === "PENDING_VERIFICATION") {
+          // Renewal semantics: old links die when the new one is issued.
+          await tokens.invalidateAll("EMAIL_VERIFICATION", account.id);
           const token = await tokens.issue("EMAIL_VERIFICATION", account.id);
-          devEmailLink = (await emails.queue("verify-email", account.email, token)).devLink;
+          await emails.queue("verify-email", account.email, token);
         }
       }
-      res.status(200).json(devEmailLink !== null ? { devEmailLink } : {});
+      // §6.1: uniform response — never confirms whether the account exists.
+      res.status(200).json({});
     },
   );
 
@@ -84,12 +86,12 @@ export function createRecoveryRouter({
     createRateLimit(limiter, config.rateLimits.forgotPassword, emailKeyFn),
     async (req, res) => {
       const body = req.body ?? {};
-      let devEmailLink: string | null = null;
       if (typeof body.email === "string" && body.email.trim() !== "") {
         const account = await users.findByEmail(body.email);
         if (account !== null && account.status === "ACTIVE") {
+          await tokens.invalidateAll("PASSWORD_RESET", account.id);
           const token = await tokens.issue("PASSWORD_RESET", account.id);
-          devEmailLink = (await emails.queue("password-reset", account.email, token)).devLink;
+          await emails.queue("password-reset", account.email, token);
           await securityEvents?.record({
             eventType: "PASSWORD_RESET_REQUESTED",
             userId: account.id,
@@ -99,7 +101,7 @@ export function createRecoveryRouter({
           });
         }
       }
-      res.status(200).json(devEmailLink !== null ? { devEmailLink } : {});
+      res.status(200).json({});
     },
   );
 
@@ -133,14 +135,17 @@ export function createRecoveryRouter({
   return router;
 }
 
+// §6.6: forgot/resend limits are per (email, IP). Invalid or missing emails
+// share a per-IP "unmatched" bucket instead of one global bucket.
 function emailKeyFn(req: Request): string {
+  let emailPart = "unmatched";
   const body = req.body ?? {};
-  if (typeof body.email !== "string" || body.email.trim() === "") {
-    return "unknown";
+  if (typeof body.email === "string" && body.email.trim() !== "") {
+    try {
+      emailPart = normalizeEmail(body.email);
+    } catch {
+      // keep "unmatched"
+    }
   }
-  try {
-    return normalizeEmail(body.email);
-  } catch {
-    return "unknown";
-  }
+  return `${emailPart}:${ipKeyFn(req)}`;
 }

@@ -61,7 +61,9 @@ export class InMemoryRateLimiter implements RateLimiter {
   }
 
   private sweepIfNeeded(now: number): void {
-    if (this.windows.size < MAX_ENTRIES && now - this.lastSweepAt < SWEEP_THROTTLE_MS) {
+    // Throttle unconditionally: once at capacity, sweeping on every request would
+    // turn each check into an O(n) scan; insert-time eviction still caps size.
+    if (now - this.lastSweepAt < SWEEP_THROTTLE_MS) {
       return;
     }
     this.lastSweepAt = now;

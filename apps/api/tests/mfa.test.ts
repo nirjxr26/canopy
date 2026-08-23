@@ -74,7 +74,6 @@ function makeApp(): TestHarness {
   const tokens = createTokenService(createTokenRepository(db));
   const mfa = createMfaService({
     repository: createMfaRepository(db),
-    tokens,
     db,
     keys: config.mfaEncryptionKeys,
     issuer: config.jwtIssuer,
@@ -165,7 +164,6 @@ describeDb("mfa endpoints", () => {
         .set("Origin", ORIGIN)
         .set("Cookie", cookie);
       expect(res.status).toBe(200);
-      expect(res.body.challenge).toMatch(/^[A-Za-z0-9_-]{20,}$/);
       expect(res.body.secret).toMatch(/^[A-Z2-7]{16,}$/);
       expect(res.body.otpauthUrl).toMatch(/^otpauth:\/\/totp\//);
     });
@@ -176,16 +174,15 @@ describeDb("mfa endpoints", () => {
       await activeUser(harness.app, harness, "mfa-confirm-1@example.com");
       const loginRes = await login(harness.app, "mfa-confirm-1@example.com");
       const cookie = cookieOf(loginRes);
-      const enrollRes = await request(harness.app)
+      await request(harness.app)
         .post(`${MFA_BASE}/enroll`)
         .set("Origin", ORIGIN)
         .set("Cookie", cookie);
-      const { challenge } = enrollRes.body;
       const res = await request(harness.app)
         .post(`${MFA_BASE}/confirm`)
         .set("Origin", ORIGIN)
         .set("Cookie", cookie)
-        .send({ challenge, code: "000000" });
+        .send({ code: "000000" });
       expect(res.status).toBe(400);
       expect(res.body.error.code).toBe("MFA_INVALID");
     });
@@ -198,16 +195,16 @@ describeDb("mfa endpoints", () => {
         .post(`${MFA_BASE}/enroll`)
         .set("Origin", ORIGIN)
         .set("Cookie", cookie);
-      const { challenge, secret } = enrollRes.body;
+      const { secret } = enrollRes.body;
       const code = generateTotpCode(secret);
       const res = await request(harness.app)
         .post(`${MFA_BASE}/confirm`)
         .set("Origin", ORIGIN)
         .set("Cookie", cookie)
-        .send({ challenge, code });
+        .send({ code });
       expect(res.status).toBe(200);
       expect(Array.isArray(res.body.recoveryCodes)).toBe(true);
-      expect(res.body.recoveryCodes.length).toBe(10);
+      expect(res.body.recoveryCodes).toHaveLength(10);
     });
 
     it("rejects a code generated from a forged client-supplied secret", async () => {
@@ -224,7 +221,7 @@ describeDb("mfa endpoints", () => {
         .post(`${MFA_BASE}/confirm`)
         .set("Origin", ORIGIN)
         .set("Cookie", cookie)
-        .send({ challenge: enrollRes.body.challenge, code: forgiveable });
+        .send({ code: forgiveable });
       expect(res.status).toBe(400);
       expect(res.body.error.code).toBe("MFA_INVALID");
       expect(generateTotpCode(serverSecret)).not.toBe(forgiveable);
@@ -238,18 +235,18 @@ describeDb("mfa endpoints", () => {
         .post(`${MFA_BASE}/enroll`)
         .set("Origin", ORIGIN)
         .set("Cookie", cookie);
-      const { challenge, secret } = enrollRes.body;
+      const { secret } = enrollRes.body;
       const code = generateTotpCode(secret);
       await request(harness.app)
         .post(`${MFA_BASE}/confirm`)
         .set("Origin", ORIGIN)
         .set("Cookie", cookie)
-        .send({ challenge, code });
+        .send({ code });
       const res = await request(harness.app)
         .post(`${MFA_BASE}/confirm`)
         .set("Origin", ORIGIN)
         .set("Cookie", cookie)
-        .send({ challenge, code });
+        .send({ code });
       expect(res.status).toBe(409);
       expect(res.body.error.code).toBe("CONFLICT");
     });
@@ -264,13 +261,13 @@ describeDb("mfa endpoints", () => {
         .post(`${MFA_BASE}/enroll`)
         .set("Origin", ORIGIN)
         .set("Cookie", cookie);
-      const { challenge, secret } = enrollRes.body;
+      const { secret } = enrollRes.body;
       const code = generateTotpCode(secret);
       await request(harness.app)
         .post(`${MFA_BASE}/confirm`)
         .set("Origin", ORIGIN)
         .set("Cookie", cookie)
-        .send({ challenge, code });
+        .send({ code });
       const meRes = await request(harness.app)
         .get(`${AUTH_BASE}/me`)
         .set("Cookie", cookie);
@@ -288,13 +285,13 @@ describeDb("mfa endpoints", () => {
         .post(`${MFA_BASE}/enroll`)
         .set("Origin", ORIGIN)
         .set("Cookie", cookie);
-      const { challenge, secret } = enrollRes.body;
+      const { secret } = enrollRes.body;
       const code = generateTotpCode(secret);
       await request(harness.app)
         .post(`${MFA_BASE}/confirm`)
         .set("Origin", ORIGIN)
         .set("Cookie", cookie)
-        .send({ challenge, code });
+        .send({ code });
       const loginRes2 = await login(harness.app, "mfa-login-1@example.com");
       expect(loginRes2.status).toBe(200);
       expect(loginRes2.body.mfaRequired).toBe(true);
@@ -311,13 +308,13 @@ describeDb("mfa endpoints", () => {
         .post(`${MFA_BASE}/enroll`)
         .set("Origin", ORIGIN)
         .set("Cookie", cookie);
-      const { challenge, secret } = enrollRes.body;
+      const { secret } = enrollRes.body;
       const code = generateTotpCode(secret);
       await request(harness.app)
         .post(`${MFA_BASE}/confirm`)
         .set("Origin", ORIGIN)
         .set("Cookie", cookie)
-        .send({ challenge, code });
+        .send({ code });
       const loginRes2 = await login(harness.app, "mfa-verify-1@example.com");
       const { mfaToken } = loginRes2.body;
       const res = await request(harness.app)
@@ -336,13 +333,13 @@ describeDb("mfa endpoints", () => {
         .post(`${MFA_BASE}/enroll`)
         .set("Origin", ORIGIN)
         .set("Cookie", cookie);
-      const { challenge, secret } = enrollRes.body;
+      const { secret } = enrollRes.body;
       const code = generateTotpCode(secret);
       await request(harness.app)
         .post(`${MFA_BASE}/confirm`)
         .set("Origin", ORIGIN)
         .set("Cookie", cookie)
-        .send({ challenge, code });
+        .send({ code });
       const loginRes2 = await login(harness.app, "mfa-verify-2@example.com");
       const { mfaToken } = loginRes2.body;
       const res = await request(harness.app)
@@ -363,13 +360,13 @@ describeDb("mfa endpoints", () => {
         .post(`${MFA_BASE}/enroll`)
         .set("Origin", ORIGIN)
         .set("Cookie", cookie);
-      const { challenge, secret } = enrollRes.body;
+      const { secret } = enrollRes.body;
       const code = generateTotpCode(secret);
       await request(harness.app)
         .post(`${MFA_BASE}/confirm`)
         .set("Origin", ORIGIN)
         .set("Cookie", cookie)
-        .send({ challenge, code });
+        .send({ code });
       const loginRes2 = await request(harness.app)
         .post(`${AUTH_BASE}/login`)
         .set("Origin", "http://localhost:5173")
@@ -392,13 +389,13 @@ describeDb("mfa endpoints", () => {
         .post(`${MFA_BASE}/enroll`)
         .set("Origin", ORIGIN)
         .set("Cookie", cookie);
-      const { challenge, secret } = enrollRes.body;
+      const { secret } = enrollRes.body;
       const code = generateTotpCode(secret);
       await request(harness.app)
         .post(`${MFA_BASE}/confirm`)
         .set("Origin", ORIGIN)
         .set("Cookie", cookie)
-        .send({ challenge, code });
+        .send({ code });
       const loginRes2 = await login(harness.app, "mfa-verify-3@example.com");
       const { mfaToken } = loginRes2.body;
       for (let i = 0; i < 4; i++) {
@@ -431,13 +428,13 @@ describeDb("mfa endpoints", () => {
         .post(`${MFA_BASE}/enroll`)
         .set("Origin", ORIGIN)
         .set("Cookie", cookie);
-      const { challenge, secret } = enrollRes.body;
+      const { secret } = enrollRes.body;
       const code = generateTotpCode(secret);
       await request(harness.app)
         .post(`${MFA_BASE}/confirm`)
         .set("Origin", ORIGIN)
         .set("Cookie", cookie)
-        .send({ challenge, code });
+        .send({ code });
       const loginRes2 = await login(harness.app, "mfa-verify-race@example.com");
       const { mfaToken } = loginRes2.body;
       const [resA, resB] = await Promise.all([
@@ -458,13 +455,13 @@ describeDb("mfa endpoints", () => {
         .post(`${MFA_BASE}/enroll`)
         .set("Origin", ORIGIN)
         .set("Cookie", cookie);
-      const { challenge, secret } = enrollRes.body;
+      const { secret } = enrollRes.body;
       const code = generateTotpCode(secret);
       const confirmRes = await request(harness.app)
         .post(`${MFA_BASE}/confirm`)
         .set("Origin", ORIGIN)
         .set("Cookie", cookie)
-        .send({ challenge, code });
+        .send({ code });
       const recoveryCode = confirmRes.body.recoveryCodes[0];
       const loginRes2 = await login(harness.app, "mfa-recovery-1@example.com");
       const { mfaToken } = loginRes2.body;
@@ -493,13 +490,13 @@ describeDb("mfa endpoints", () => {
         .post(`${MFA_BASE}/enroll`)
         .set("Origin", ORIGIN)
         .set("Cookie", cookie);
-      const { challenge, secret } = enrollRes.body;
+      const { secret } = enrollRes.body;
       const code = generateTotpCode(secret);
       await request(harness.app)
         .post(`${MFA_BASE}/confirm`)
         .set("Origin", ORIGIN)
         .set("Cookie", cookie)
-        .send({ challenge, code });
+        .send({ code });
       const res = await request(harness.app)
         .post(`${MFA_BASE}/disable`)
         .set("Origin", ORIGIN)
@@ -517,13 +514,13 @@ describeDb("mfa endpoints", () => {
         .post(`${MFA_BASE}/enroll`)
         .set("Origin", ORIGIN)
         .set("Cookie", cookie);
-      const { challenge, secret } = enrollRes.body;
+      const { secret } = enrollRes.body;
       const code = generateTotpCode(secret);
       await request(harness.app)
         .post(`${MFA_BASE}/confirm`)
         .set("Origin", ORIGIN)
         .set("Cookie", cookie)
-        .send({ challenge, code });
+        .send({ code });
       const res = await request(harness.app)
         .post(`${MFA_BASE}/disable`)
         .set("Origin", ORIGIN)
@@ -545,13 +542,13 @@ describeDb("mfa endpoints", () => {
         .post(`${MFA_BASE}/enroll`)
         .set("Origin", ORIGIN)
         .set("Cookie", cookie);
-      const { challenge, secret } = enrollRes.body;
+      const { secret } = enrollRes.body;
       const code = generateTotpCode(secret);
       await request(harness.app)
         .post(`${MFA_BASE}/confirm`)
         .set("Origin", ORIGIN)
         .set("Cookie", cookie)
-        .send({ challenge, code });
+        .send({ code });
       const disableRes = await request(harness.app)
         .post(`${MFA_BASE}/disable`)
         .set("Origin", ORIGIN)
@@ -573,13 +570,13 @@ describeDb("mfa endpoints", () => {
         .post(`${MFA_BASE}/enroll`)
         .set("Origin", ORIGIN)
         .set("Cookie", cookie);
-      const { challenge, secret } = enrollRes.body;
+      const { secret } = enrollRes.body;
       const code = generateTotpCode(secret);
       await request(harness.app)
         .post(`${MFA_BASE}/confirm`)
         .set("Origin", ORIGIN)
         .set("Cookie", cookie)
-        .send({ challenge, code });
+        .send({ code });
       const user = await harness.users.findByEmail("mfa-disable-3@example.com");
       const repo = createMfaRepository(harness.db);
       expect(await repo.findEnabledByUser(user!.id)).not.toBeNull();
@@ -606,12 +603,8 @@ describeDb("mfa endpoints", () => {
       expect(codesAfter).toHaveLength(0);
 
       const enroll2 = await harness.mfa.enroll(user!);
-      const confirm2 = await harness.mfa.confirm(
-        user!,
-        enroll2.challenge,
-        generateTotpCode(enroll2.secret),
-      );
-      expect(confirm2.recoveryCodes.length).toBe(10);
+      const confirm2 = await harness.mfa.confirm(user!.id, generateTotpCode(enroll2.secret));
+      expect(confirm2.recoveryCodes).toHaveLength(10);
       expect(await repo.findEnabledByUser(user!.id)).not.toBeNull();
       const meRes = await request(harness.app).get(`${AUTH_BASE}/me`).set("Cookie", cookie);
       expect(meRes.status).toBe(200);

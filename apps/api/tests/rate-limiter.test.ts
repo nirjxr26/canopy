@@ -7,10 +7,26 @@ import { probeRedis, TEST_REDIS_URL } from "./helpers/redis.js";
 
 const redisAvailable = await probeRedis();
 
-runRateLimiterSuite("memory", async () => {
-  const limiter = new InMemoryRateLimiter();
-  return { limiter, dispose: () => limiter.dispose() };
-});
+runRateLimiterSuite(
+  "memory",
+  async () => {
+    const limiter = new InMemoryRateLimiter();
+    return { limiter, dispose: () => limiter.dispose() };
+  },
+  {
+    makeAdvancingLimiter: () => {
+      let now = Date.now();
+      const limiter = new InMemoryRateLimiter({ now: () => now });
+      return {
+        limiter,
+        advanceTime: (ms: number) => {
+          now += ms;
+        },
+        dispose: () => limiter.dispose(),
+      };
+    },
+  },
+);
 
 describe("rate limiter (redis fail-closed)", () => {
   it("denies requests when redis errors instead of failing open", async () => {
@@ -87,7 +103,8 @@ if (redisAvailable) {
     const limiter = new RedisRateLimiter(client);
     return { limiter, dispose: () => limiter.dispose() };
   });
+} else if (process.env.VITEST_STRICT === "1") {
+  throw new Error("Redis unavailable but VITEST_STRICT=1 — refusing to silently skip redis suites");
 } else {
-  console.warn("redis unavailable — skipping redis rate-limiter tests");
-  describe.skip("rate limiter (redis)", () => {});
+  console.warn("redis unavailable — redis rate-limiter tests not registered");
 }

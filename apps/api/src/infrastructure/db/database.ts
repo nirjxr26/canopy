@@ -103,7 +103,11 @@ export interface Database {
 
 export type DbExecutor = Kysely<Database> | Transaction<Database>;
 
-export function createDb(config: Pick<Config, "databaseUrl" | "dbPoolMin" | "dbPoolMax">): {
+export function createDb(
+  config: Pick<Config, "databaseUrl" | "dbPoolMin" | "dbPoolMax">,
+  onError: (err: Error) => void = (err) => console.error("idle postgres client error:", err.message),
+  opts?: { statementTimeoutMs?: number },
+): {
   pool: pg.Pool;
   db: Kysely<Database>;
 } {
@@ -112,8 +116,10 @@ export function createDb(config: Pick<Config, "databaseUrl" | "dbPoolMin" | "dbP
     min: config.dbPoolMin,
     max: config.dbPoolMax,
     connectionTimeoutMillis: 5_000,
-    statement_timeout: 5_000,
+    statement_timeout: opts?.statementTimeoutMs ?? 5_000,
   });
+  // Without this handler an idle-client failure emits an unhandled 'error' event and crashes the process.
+  pool.on("error", onError);
   const db = new Kysely<Database>({
     dialect: new PostgresDialect({ pool }),
   });

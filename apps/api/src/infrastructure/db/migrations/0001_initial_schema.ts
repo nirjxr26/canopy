@@ -7,6 +7,8 @@ import { emailOutboxHtml } from "./0002_email_outbox_html.js";
 import { addMfaFailedAttempts } from "./0003_add_mfa_failed_attempts.js";
 import { addOutboxState } from "./0004_email_outbox_state.js";
 import { addMfaEnrollTokenKind } from "./0005_add_mfa_enroll_token_kind.js";
+import { outboxClaimIndex } from "./0006_outbox_claim_index.js";
+import { retentionIndexes } from "./0007_retention_indexes.js";
 
 const STATUS_LIST = USER_STATUSES.map((s) => `'${s}'`).join(",");
 
@@ -127,4 +129,6 @@ export const migrations: Record<string, Migration> = {
   "0003_add_mfa_failed_attempts": addMfaFailedAttempts,
   "0004_email_outbox_state": addOutboxState,
   "0005_add_mfa_enroll_token_kind": addMfaEnrollTokenKind,
+  "0006_outbox_claim_index": outboxClaimIndex,
+  "0007_retention_indexes": retentionIndexes,
 };

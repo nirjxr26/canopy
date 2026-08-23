@@ -2,7 +2,7 @@ import type { Kysely } from "kysely";
 import { sql } from "kysely";
 import type { Database, DbExecutor } from "../../infrastructure/db/database.js";
 
-export type TokenKind = "EMAIL_VERIFICATION" | "PASSWORD_RESET" | "MFA_PENDING" | "MFA_ENROLL";
+export type TokenKind = "EMAIL_VERIFICATION" | "PASSWORD_RESET" | "MFA_PENDING";
 
 export interface NewToken {
   id: string;
@@ -26,6 +26,8 @@ export interface TokenRepository {
   updateMetadata(id: string, patch: Record<string, unknown>): Promise<boolean>;
   incrementMfaFailures(id: string): Promise<number | null>;
   markUsed(id: string, now: Date): Promise<void>;
+  /** Marks every unconsumed token of a kind for a user as used (e.g. renewing verification links). */
+  invalidateAll(kind: TokenKind, userId: string): Promise<number>;
 }
 
 export function createTokenRepository(db: Kysely<Database> | DbExecutor): TokenRepository {
@@ -72,15 +74,16 @@ export function createTokenRepository(db: Kysely<Database> | DbExecutor): TokenR
       return { id: row.id, userId: row.user_id, metadata: row.metadata ?? {} };
     },
 
-    async updateMetadata(id, patch) {
-      const rows = await db
-        .updateTable("tokens")
-        .set({ metadata: patch })
-        .where("id", "=", id)
-        .returning("id")
-        .execute();
-      return rows.length > 0;
-    },
+  async updateMetadata(id, patch) {
+    // Merge into the existing JSONB document so a partial patch cannot wipe sibling keys.
+    const rows = await db
+      .updateTable("tokens")
+      .set({ metadata: sql`metadata || ${JSON.stringify(patch)}::jsonb` })
+      .where("id", "=", id)
+      .returning("id")
+      .execute();
+    return rows.length > 0;
+  },
 
     async incrementMfaFailures(id) {
       const rows = await db
@@ -93,8 +96,25 @@ export function createTokenRepository(db: Kysely<Database> | DbExecutor): TokenR
       return rows.length > 0 ? rows[0]!.mfa_failed_attempts : null;
     },
 
-    async markUsed(id, now) {
-      await db.updateTable("tokens").set({ used_at: now }).where("id", "=", id).execute();
-    },
+  async markUsed(id, now) {
+    await db
+      .updateTable("tokens")
+      .set({ used_at: now })
+      .where("id", "=", id)
+      .where("used_at", "is", null)
+      .execute();
+  },
+
+  async invalidateAll(kind, userId) {
+    const rows = await db
+      .updateTable("tokens")
+      .set({ used_at: new Date() })
+      .where("kind", "=", kind)
+      .where("user_id", "=", userId)
+      .where("used_at", "is", null)
+      .returning("id")
+      .execute();
+    return rows.length;
+  },
   };
 }

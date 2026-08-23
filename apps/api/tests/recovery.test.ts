@@ -79,7 +79,6 @@ function makeApp(): TestHarness {
   const tokens = createTokenService(createTokenRepository(db));
   const mfa = createMfaService({
     repository: createMfaRepository(db),
-    tokens,
     db,
     keys: config.mfaEncryptionKeys,
     issuer: config.jwtIssuer,
@@ -251,23 +250,28 @@ describeDb("verification & recovery endpoints", () => {
       await signup(harness.app, email);
       const res = await resend(harness.app, email);
       expect(res.status).toBe(200);
-      expect(res.body.devEmailLink).toContain("verify-email?token=");
+      expect(res.body).toEqual({}); // §6.1 uniform response — no link echo
       const user = await harness.users.findByEmail(email);
-      const message = await harness.db
+      const messages = await harness.db
         .selectFrom("email_outbox")
         .selectAll()
         .where("recipient", "=", email)
-        .executeTakeFirstOrThrow();
-      expect(message.subject).toBe("Verify your email");
-      expect(message.body).not.toContain("verify-email?token=");
-      expect(unsealBody(message.body, harness.keys)).toContain("verify-email?token=");
-      const tokenRow = await harness.db
+        .orderBy("id", "asc")
+        .execute();
+      // signup + resend
+      expect(messages).toHaveLength(2);
+      expect(messages[1]!.subject).toBe("Verify your email");
+      const tokenRows = await harness.db
         .selectFrom("tokens")
         .selectAll()
         .where("user_id", "=", user!.id)
         .where("kind", "=", "EMAIL_VERIFICATION")
-        .executeTakeFirstOrThrow();
-      expect(tokenRow.used_at).toBeNull();
+        .orderBy("created_at", "desc")
+        .execute();
+      // renewal: newest link live, original invalidated
+      expect(tokenRows).toHaveLength(2);
+      expect(tokenRows[0]!.used_at).toBeNull();
+      expect(tokenRows[1]!.used_at).not.toBeNull();
     });
 
     it("is generic for unknown emails (200, no rows)", async () => {
@@ -309,6 +313,30 @@ describeDb("verification & recovery endpoints", () => {
       }
       expect(statuses).toEqual([200, 200, 200, 429]);
     });
+
+    it("renewal invalidates the previous verification link", async () => {
+      const email = "resend-renew@example.com";
+      const original = (await pendingUser(email)).token;
+      const res = await resend(harness.app, email);
+      expect(res.status).toBe(200);
+
+      const dead = await verifyEmail(harness.app, original);
+      expect(dead.status).toBe(400);
+      expect(dead.body.error.code).toBe("TOKEN_INVALID");
+
+      // The newest link still works.
+      const user = await harness.users.findByEmail(email);
+      const message = await harness.db
+        .selectFrom("email_outbox")
+        .selectAll()
+        .where("recipient", "=", email)
+        .orderBy("id", "desc")
+        .executeTakeFirstOrThrow();
+      const renewedRaw = tokenFromBody(unsealBody(message.body, harness.keys));
+      const ok = await verifyEmail(harness.app, renewedRaw);
+      expect(ok.status).toBe(200);
+      expect(user!.status).toBe("PENDING_VERIFICATION");
+    });
   });
 
   describe("forgot-password", () => {
@@ -323,7 +351,7 @@ describeDb("verification & recovery endpoints", () => {
       await activeUser(email);
       const res = await forgot(harness.app, email);
       expect(res.status).toBe(200);
-      expect(res.body.devEmailLink).toContain("reset-password?token=");
+      expect(res.body).toEqual({}); // §6.1 uniform response — no link echo
       const user = await harness.users.findByEmail(email);
       const message = await harness.db
         .selectFrom("email_outbox")

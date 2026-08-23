@@ -1,5 +1,6 @@
 import { Router } from "express";
 import type { Request } from "express";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { AppError, ERROR_CODES } from "../../shared/app-error.js";
 import type { Config } from "../../infrastructure/config/config.js";
 import type { PasswordHasher } from "../../infrastructure/crypto/password.js";
@@ -9,6 +10,7 @@ import type { UserService } from "../../modules/identity/user-service.js";
 import type { UserRecord } from "../../modules/identity/user-repository.js";
 import { normalizeEmail } from "../../modules/identity/email-normalizer.js";
 import type { SessionService } from "../../modules/session/session-service.js";
+import { sessionCookieName } from "../../modules/session/session-service.js";
 import type { TokenService } from "../../modules/identity/token-service.js";
 import type { AuthFlows } from "../../modules/identity/auth-flows.js";
 import type { MfaService } from "../../modules/mfa/mfa-service.js";
@@ -42,6 +44,104 @@ export function toUserJson(user: UserRecord, mfaEnabled = false) {
   };
 }
 
+/** Constant-time service-key comparison (spec §8.1): hash both sides so lengths match. */
+function serviceKeyMatches(presented: string | undefined, expected: string): boolean {
+  if (typeof presented !== "string" || presented === "") {
+    return false;
+  }
+  const presentedDigest = createHash("sha256").update(presented).digest();
+  const expectedDigest = createHash("sha256").update(expected).digest();
+  return timingSafeEqual(presentedDigest, expectedDigest);
+}
+
+export interface IntrospectRouterDeps {
+  config: Config;
+  limiter: RateLimiter;
+  sessions: SessionService;
+  users: UserService;
+  securityEvents?: SecurityEventService;
+}
+
+/**
+ * Mounted BEFORE the global Origin check: the service-key-gated introspect endpoint is
+ * exempt from Origin enforcement (spec §8.1) — machine consumers send no Origin header.
+ */
+export function createIntrospectRouter({
+  config,
+  limiter,
+  sessions,
+  users,
+  securityEvents,
+}: IntrospectRouterDeps): Router {
+  const router = Router();
+  router.post(
+    "/",
+    createRateLimit(limiter, config.rateLimits.introspect, ipKeyFn),
+    async (req, res, next) => {
+      try {
+        const serviceKey = req.header("X-Service-Key");
+        if (!config.serviceApiKey || !serviceKeyMatches(serviceKey, config.serviceApiKey)) {
+          throw new AppError(ERROR_CODES.UNAUTHENTICATED, "Invalid service key");
+        }
+        const body = req.body ?? {};
+        const secret = typeof body.sessionSecret === "string" ? body.sessionSecret : "";
+        if (!secret) {
+          await securityEvents?.record({
+            eventType: "INTROSPECT_TOKEN_REJECTED",
+            actor: "SYSTEM",
+            correlationId: req.requestId,
+          });
+          res.status(200).json({ valid: false });
+          return;
+        }
+        const session = await sessions.findBySecret(secret);
+        if (session === null) {
+          await securityEvents?.record({
+            eventType: "INTROSPECT_TOKEN_REJECTED",
+            actor: "SYSTEM",
+            correlationId: req.requestId,
+          });
+          res.status(200).json({ valid: false });
+          return;
+        }
+        const user = await users.getById(session.userId);
+        if (user === null || user.status === "DEACTIVATED" || user.status === "SUSPENDED") {
+          await securityEvents?.record({
+            eventType: "INTROSPECT_TOKEN_REJECTED",
+            userId: session.userId,
+            actor: "SYSTEM",
+            correlationId: req.requestId,
+          });
+          res.status(200).json({ valid: false });
+          return;
+        }
+        // Successes are deliberately not recorded: at up to 600 calls/min/key they
+        // would flood security_events with noise (H-23).
+        res.status(200).json({
+          valid: true,
+          userId: user.id,
+          email: user.email,
+          emailVerified: user.emailVerifiedAt !== null,
+          status: user.status,
+          expiresAt: session.expiresAt.toISOString(),
+        });
+      } catch (err) {
+        next(err);
+      }
+    },
+  );
+  return router;
+}
+
+/** Normalizes for limiter keys; invalid input gets a stable bucket instead of throwing. */
+function normalizeEmailSafe(email: string): string {
+  try {
+    return normalizeEmail(email);
+  } catch {
+    return "invalid";
+  }
+}
+
 export function createAuthRouter({
   config,
   hasher,
@@ -56,7 +156,6 @@ export function createAuthRouter({
   const router = Router();
   const requireSession = createRequireSession(sessions, config);
 
-  
 
   function sessionCookie(token: string, persistent: boolean = true) {
     return sessionCookieValue(config, token, persistent);
@@ -72,8 +171,10 @@ export function createAuthRouter({
       correlationId: req.requestId,
     });
     if (account !== undefined) {
+      // §6.6: the lock bucket is per (email, IP) — a single attacker IP cannot
+      // lock a victim from arbitrary addresses, and casing variants share one bucket.
       const accountFailed = await limiter.check(
-        `loginAccount:${normalizeEmail(email)}`,
+        `loginAccount:${normalizeEmailSafe(email)}:${ip}`,
         config.rateLimits.loginAccount.limit,
         config.rateLimits.loginAccount.windowMs,
       );
@@ -95,7 +196,7 @@ export function createAuthRouter({
       }
     }
     const failed = await limiter.check(
-      `${ip}:${email}`,
+      `${ip}:${normalizeEmailSafe(email)}`,
       config.rateLimits.loginFailed.limit,
       config.rateLimits.loginFailed.windowMs,
     );
@@ -116,18 +217,17 @@ export function createAuthRouter({
         firstName: typeof body.firstName === "string" ? body.firstName : undefined,
         lastName: typeof body.lastName === "string" ? body.lastName : undefined,
       });
-      const user = result.user!;
+      // §6.1: the distinction between created/duplicate lives ONLY in the
+      // security-event log — the client gets one uniform response.
       await securityEvents?.record({
-        eventType: "SIGNUP",
-        userId: user.id,
+        eventType:
+          result.outcome === "created" ? "SIGNUP" : "DUPLICATE_SIGNUP_ATTEMPT",
+        userId: result.userId,
         ipAddress: req.ip,
         userAgent: req.header("user-agent"),
         correlationId: req.requestId,
       });
-      res.status(201).json({
-        user: toUserJson(user),
-        ...(result.devEmailLink !== null ? { devEmailLink: result.devEmailLink } : {}),
-      });
+      res.status(201).json({ message: "Check your inbox to verify your email." });
     },
   );
 
@@ -143,27 +243,33 @@ export function createAuthRouter({
         await hasher.verify(await hasher.dummyHash(), password);
         throw await failLogin(req, email);
       }
-      const loginDecision = canLogin(account);
-      if (!loginDecision.allowed) {
-        const passwordValid = await hasher.verify(account.passwordHash, password);
-        if (!passwordValid) {
-          await hasher.verify(await hasher.dummyHash(), password);
-          throw await failLogin(req, email, account);
-        }
-        if (loginDecision.blockReason === "PENDING_VERIFICATION") {
-          throw new AppError(
-            ERROR_CODES.EMAIL_NOT_VERIFIED,
-            "Email not verified — check your inbox for the verification link",
-          );
-        }
-        await hasher.verify(await hasher.dummyHash(), password);
-        throw await failLogin(req, email);
-      }
-      const valid = await hasher.verify(account.passwordHash, password);
-      if (!valid) {
+      // §6.1/§6.2 enumeration defense: exactly ONE argon2 verification runs on
+      // every path (unknown=dummy, known=real), so latency never reveals
+      // whether an email exists or what state the account is in.
+      const passwordValid = await hasher.verify(account.passwordHash, password);
+      if (!passwordValid) {
         throw await failLogin(req, email, account);
       }
+      // §6.1/R-12: account-state reasons live ONLY in the security-event log.
+      // Blocked accounts get the same generic response as bad credentials,
+      // at the same cost (single verify above).
+      const loginDecision = canLogin(account);
+      if (!loginDecision.allowed) {
+        await securityEvents?.record({
+          eventType: "LOGIN_BLOCKED",
+          userId: account.id,
+          ipAddress: ipKeyFn(req),
+          userAgent: req.header("user-agent"),
+          correlationId: req.requestId,
+          metadata: { reason: loginDecision.blockReason },
+        });
+        throw await failLogin(req, email);
+      }
       const mfaEnabled = await mfa.isEnabled(account.id);
+      // Password-leg bookkeeping runs for every successful password verification,
+      // including the MFA branch (last_login_at + argon2 param upgrades reach all users).
+      await users.recordLogin(account.id);
+      await users.rehashPasswordIfNeeded(account.id, account.passwordHash, password);
       const persistent = body.persistent !== false;
       if (mfaEnabled) {
         const mfaToken = await tokens.issue("MFA_PENDING", account.id, {
@@ -173,8 +279,6 @@ export function createAuthRouter({
         res.status(200).json({ mfaRequired: true, mfaToken });
         return;
       }
-      await users.recordLogin(account.id);
-      await users.rehashPasswordIfNeeded(account.id, account.passwordHash, password);
       const { token } = await sessions.createSession({
         userId: account.id,
         ipAddress: req.ip,
@@ -199,8 +303,7 @@ export function createAuthRouter({
     async (req, res) => {
       const { session, user } = requireAuth(req);
       await sessions.revoke(session.id, user.id);
-      res.clearCookie("ap_session", { path: "/" });
-      res.clearCookie("__Host-ap_session", { path: "/", secure: config.cookieSecure });
+      res.clearCookie(sessionCookieName(config.cookieSecure), { path: "/", secure: config.cookieSecure });
       res.status(204).end();
     },
   );
@@ -253,7 +356,7 @@ export function createAuthRouter({
       if (!valid) {
         throw new AppError(ERROR_CODES.INVALID_CREDENTIALS, "Invalid current password");
       }
-      await users.updatePassword(account.id, newPassword);
+      await users.updatePassword(account.id, newPassword, { email: account.email });
       await sessions.revokeAll(account.id);
       await securityEvents?.record({
         eventType: "PASSWORD_CHANGED",
@@ -276,67 +379,6 @@ export function createAuthRouter({
       });
       res.setHeader("Set-Cookie", sessionCookie(token, true));
       res.status(204).end();
-    },
-  );
-
-  router.post(
-    "/introspect",
-    createRateLimit(limiter, config.rateLimits.introspect, ipKeyFn),
-    async (req, res, next) => {
-      try {
-        const serviceKey = req.header("X-Service-Key");
-        if (!config.serviceApiKey || serviceKey !== config.serviceApiKey) {
-          throw new AppError(ERROR_CODES.UNAUTHENTICATED, "Invalid service key");
-        }
-        const body = req.body ?? {};
-        const secret = typeof body.sessionSecret === "string" ? body.sessionSecret : "";
-        if (!secret) {
-          await securityEvents?.record({
-            eventType: "INTROSPECT_TOKEN_REJECTED",
-            actor: "SYSTEM",
-            correlationId: req.requestId,
-          });
-          res.status(200).json({ valid: false });
-          return;
-        }
-        const session = await sessions.findBySecret(secret);
-        if (session === null) {
-          await securityEvents?.record({
-            eventType: "INTROSPECT_TOKEN_REJECTED",
-            actor: "SYSTEM",
-            correlationId: req.requestId,
-          });
-          res.status(200).json({ valid: false });
-          return;
-        }
-        const user = await users.getById(session.userId);
-        if (user === null || user.status === "DEACTIVATED" || user.status === "SUSPENDED") {
-          await securityEvents?.record({
-            eventType: "INTROSPECT_TOKEN_REJECTED",
-            userId: session.userId,
-            actor: "SYSTEM",
-            correlationId: req.requestId,
-          });
-          res.status(200).json({ valid: false });
-          return;
-        }
-        await securityEvents?.record({
-          eventType: "INTROSPECT_SUCCESS",
-          userId: user.id,
-          actor: "SYSTEM",
-          correlationId: req.requestId,
-        });
-        res.status(200).json({
-          valid: true,
-          userId: user.id,
-          email: user.email,
-          emailVerified: user.emailVerifiedAt !== null,
-          status: user.status,
-          expiresAt: session.expiresAt.toISOString(),
-        });
-      } catch (err) {
-        next(err);
-      }
     },
   );
 

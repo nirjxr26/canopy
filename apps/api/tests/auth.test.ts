@@ -70,7 +70,6 @@ function makeApp(): TestHarness {
   const tokens = createTokenService(createTokenRepository(db));
   const mfa = createMfaService({
     repository: createMfaRepository(db),
-    tokens,
     db,
     keys: config.mfaEncryptionKeys,
     issuer: config.jwtIssuer,
@@ -125,20 +124,21 @@ describeDb("auth endpoints", () => {
   });
 
   describe("signup", () => {
-    it("creates an account and returns the generic shape", async () => {
+    it("creates an account and returns the generic shape (no user echo)", async () => {
       const res = await signup(harness.app, "signup-1@example.com");
       expect(res.status).toBe(201);
-      expect(res.body.user.id).toMatch(/^usr_/);
-      expect(res.body.user.email).toBe("signup-1@example.com");
+      expect(res.body).toEqual({ message: "Check your inbox to verify your email." });
       expect(JSON.stringify(res.body)).not.toContain("password");
     });
 
-    it("is generic for duplicate accounts (no enumeration)", async () => {
+    it("is fully uniform for duplicate accounts (no enumeration)", async () => {
       const first = await signup(harness.app, "signup-2@example.com");
       const second = await signup(harness.app, "signup-2@example.com");
       expect(first.status).toBe(201);
       expect(second.status).toBe(201);
-      expect(second.body.user.id).toBe(first.body.user.id);
+      expect(second.body).toEqual(first.body);
+      // And no user data leaks in either response.
+      expect(JSON.stringify(second.body)).not.toContain("signup-2@example.com");
     });
 
     it("rejects a weak password", async () => {
@@ -394,6 +394,23 @@ describeDb("auth endpoints", () => {
         expect(res.status).toBe(401);
       }
       const sixth = await login(harness.app, "ratelimit-login@example.com", "wrong-password-1234");
+      expect(sixth.status).toBe(429);
+      expect(sixth.body.error.code).toBe("RATE_LIMITED");
+    });
+
+    it("shares the failed-login bucket across email casing variants (no bypass)", async () => {
+      const email = "ratelimit-casing@example.com";
+      await signup(harness.app, email);
+      const user = await harness.users.findByEmail(email);
+      await harness.users.verifyEmail(user!.id);
+
+      for (let i = 0; i < 5; i++) {
+        // Vary casing each attempt — all must land in one normalized bucket.
+        const variant = [email, "RateLimit-Casing@example.com", "RATELIMIT-CASING@EXAMPLE.COM"][i % 3]!;
+        const res = await login(harness.app, variant, "wrong-password-1234");
+        expect(res.status).toBe(401);
+      }
+      const sixth = await login(harness.app, email, "wrong-password-1234");
       expect(sixth.status).toBe(429);
       expect(sixth.body.error.code).toBe("RATE_LIMITED");
     });

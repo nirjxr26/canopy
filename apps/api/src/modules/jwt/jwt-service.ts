@@ -27,53 +27,83 @@ export interface JwtPayload {
   exp: number;
 }
 
-let cachedKeyPromise: Promise<jose.CryptoKey | jose.KeyObject> | undefined;
+type SignerConfig = Pick<
+  Config,
+  "jwtAccessTtlSeconds" | "jwtIssuer" | "jwtAudience" | "jwtKid" | "jwtPrivateKey"
+>;
 
-export async function validateJwtKey(privateKey: string): Promise<void> {
-  await jose.importPKCS8(privateKey, "RS256", { extractable: true });
+export interface JwtSigner {
+  /** Validates the configured private key; rejects with a specific error. */
+  validateKey(): Promise<void>;
+  mintJwt(payload: Omit<JwtPayload, "iat" | "exp">): Promise<string>;
+  buildJwks(): Promise<JwksDocument>;
 }
 
-export async function makeJwtKey(config: Pick<Config, "jwtPrivateKey" | "jwtKid">): Promise<jose.CryptoKey | jose.KeyObject> {
-  if (!config.jwtPrivateKey) {
-    throw new Error("JWT private key not configured");
-  }
-  cachedKeyPromise ??= jose.importPKCS8(config.jwtPrivateKey, "RS256", { extractable: true });
-  return cachedKeyPromise;
-}
+/**
+ * Per-config signer (spec §5.1 #12): each instance owns its key cache, so
+ * swapping JWT_PRIVATE_KEY and constructing a new signer is the rotation
+ * kill-switch — and one instance's failure can never poison another's.
+ */
+export function createJwtSigner(config: SignerConfig): JwtSigner {
+  let keyPromise: Promise<jose.CryptoKey | jose.KeyObject> | undefined;
+  let jwksCache: Promise<JwksDocument> | undefined;
 
-export async function mintJwt(
-  payload: Omit<JwtPayload, "iat" | "exp">,
-  config: Pick<Config, "jwtAccessTtlSeconds" | "jwtIssuer" | "jwtAudience" | "jwtKid" | "jwtPrivateKey">,
-): Promise<string> {
-  const iat = Math.floor(Date.now() / 1000);
-  const exp = iat + config.jwtAccessTtlSeconds;
-  const key = await makeJwtKey(config);
-
-  return new jose.SignJWT({ ...payload })
-    .setProtectedHeader({ alg: "RS256", kid: config.jwtKid ?? "" })
-    .setIssuedAt(iat)
-    .setExpirationTime(exp)
-    .sign(key);
-}
-
-export async function buildJwks(config: Pick<Config, "jwtPrivateKey" | "jwtKid">): Promise<JwksDocument> {
-  const key = await makeJwtKey(config);
-  const privateJwk = await jose.exportJWK(key);
-  const publicKey = createPublicKey({ key: privateJwk as RsaPublicJwk, format: "jwk" });
-  const jwk = await jose.exportJWK(publicKey);
-  for (const param of JWK_PRIVATE_PARAMS) {
-    if (param in jwk) {
-      throw new Error(`JWKS export must never contain the private parameter "${param}"`);
+  function keyFor(): Promise<jose.CryptoKey | jose.KeyObject> {
+    if (!config.jwtPrivateKey) {
+      return Promise.reject(new Error("JWT private key not configured"));
     }
+    keyPromise ??= jose.importPKCS8(config.jwtPrivateKey, "RS256", { extractable: true }).catch((err) => {
+      keyPromise = undefined; // never cache a failed import (no poisoned cache)
+      throw err;
+    });
+    return keyPromise;
   }
+
   return {
-    keys: [
-      {
-        ...jwk,
-        kid: config.jwtKid ?? "",
-        alg: "RS256",
-        use: "sig",
-      },
-    ],
+    async validateKey() {
+      await keyFor();
+    },
+
+    async mintJwt(payload) {
+      const iat = Math.floor(Date.now() / 1000);
+      const exp = iat + config.jwtAccessTtlSeconds;
+      const key = await keyFor();
+      return new jose.SignJWT({ ...payload })
+        .setProtectedHeader({ alg: "RS256", kid: config.jwtKid ?? "", typ: "at+jwt" })
+        .setIssuedAt(iat)
+        .setExpirationTime(exp)
+        .sign(key);
+    },
+
+    async buildJwks() {
+      // The JWKS document is fully derived from the key — cache it per signer.
+      jwksCache ??= (async () => {
+        const key = await keyFor();
+        const privateJwk = await jose.exportJWK(key);
+        const publicKey = createPublicKey({ key: privateJwk as RsaPublicJwk, format: "jwk" });
+        const jwk = await jose.exportJWK(publicKey);
+        for (const param of JWK_PRIVATE_PARAMS) {
+          if (param in jwk) {
+            throw new Error(`JWKS export must never contain the private parameter "${param}"`);
+          }
+        }
+        return {
+          keys: [
+            {
+              ...jwk,
+              kid: config.jwtKid ?? "",
+              alg: "RS256",
+              use: "sig",
+            },
+          ],
+        } satisfies JwksDocument;
+      })();
+      try {
+        return await jwksCache;
+      } catch (err) {
+        jwksCache = undefined; // allow retry after a transient failure
+        throw err;
+      }
+    },
   };
 }

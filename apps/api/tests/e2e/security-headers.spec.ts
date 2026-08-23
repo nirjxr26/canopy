@@ -26,5 +26,13 @@ test.describe('Automated API Security & Origin Validation', () => {
 
     const headers = response.headers();
     expect(headers['x-request-id']).toBeDefined();
+
+    // §6.10: security headers on every response.
+    expect(headers['strict-transport-security']).toContain('max-age=63072000');
+    expect(headers['strict-transport-security']).toContain('includeSubDomains');
+    expect(headers['x-content-type-options']).toBe('nosniff');
+    expect(headers['x-frame-options']).toBe('DENY');
+    expect(headers['content-security-policy']).toContain("default-src 'self'");
+    expect(headers['referrer-policy']).toBe('strict-origin-when-cross-origin');
   });
 });

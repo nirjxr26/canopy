@@ -22,33 +22,41 @@ export interface EmailProvider {
   send(message: EmailMessage): Promise<void>;
 }
 
-export function createConsoleEmailProvider(logger: pino.Logger): EmailProvider {
+/** Strips the token query parameter so centralized log sinks never capture live links. */
+export function redactTokenFromUrl(url: string): string {
+  return url.replace(/([?&]token=)[^&\s]+/g, "$1[REDACTED]");
+}
+
+export function createConsoleEmailProvider(
+  logger: pino.Logger,
+  opts: { allowDevLink?: boolean } = {},
+): EmailProvider {
+  const allowDevLink = opts.allowDevLink ?? false;
   return {
     kind: "console",
     async send(message) {
+      const linkLine = message.body.split("\n").find((l) => l.includes("http")) ?? "";
+      // Info level (what sinks collect) carries a REDACTED link only; the full
+      // clickable link is dev-only ergonomics and never leaves debug/local.
       logger.info(
-        { from: message.from, to: message.to, subject: message.subject },
-        `email outbox: sending to ${message.to} — subject: ${message.subject}`,
+        { to: message.to, subject: message.subject, link: redactTokenFromUrl(linkLine) },
+        `email outbox: ${message.subject} queued`,
       );
-      logger.debug({ body: message.body }, "email outbox body");
+      if (allowDevLink && linkLine !== "") {
+        logger.info({ link: linkLine }, "email outbox: dev link (console provider)");
+      } else {
+        logger.debug({ to: message.to, subject: message.subject, link: linkLine }, "email outbox: full link");
+      }
     },
   };
 }
 
 function escapeHtml(value: string): string {
   return value
-    .replaceAll("<", "&amp;")
+    .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
     .replaceAll("\"", "&quot;");
-}
-
-function normalizeFrontendUrlForProduction(url: string): string {
-  return url.replace(/^http:\/\//i, "https://");
-}
-
-function normalizeFrontendUrlForDevelopment(url: string): string {
-  return url;
 }
 
 function renderEmailHtml(deps: {
@@ -62,7 +70,7 @@ function renderEmailHtml(deps: {
   return (
     `<!doctype html><html><body style="margin:0;padding:0;background:#f4f5f7;font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif">` +
     `<div style="max-width:480px;margin:40px auto;background:#ffffff;border-radius:12px;padding:32px;border:1px solid #e6e8ee">` +
-    `<div style="font-size:20px;font-weight:700;color:#0b0d12">SentinelX</div>` +
+    `<div style="font-size:20px;font-weight:700;color:#0b0d12">CanopY</div>` +
     `<h1 style="font-size:18px;color:#0b0d12;margin:24px 0 8px">${escapeHtml(heading)}</h1>` +
     `<p style="color:#5b6472;font-size:14px;line-height:1.6;margin:0 0 24px">To continue, open the link below. You can also copy and paste it into your browser.</p>` +
     `<a href="${href}" style="display:inline-block;background:#6d8dff;color:#ffffff;text-decoration:none;font-weight:600;padding:12px 24px;border-radius:8px;font-size:14px">${escapeHtml(buttonLabel)}</a>` +
@@ -87,6 +95,7 @@ export function createSmtpEmailProvider(
   } catch (err) {
     throw new Error(
       `Invalid SMTP_URL: ${err instanceof Error ? err.message : String(err)}`,
+      { cause: err },
     );
   }
   return {
@@ -118,7 +127,7 @@ export interface EmailService {
     kind: EmailKind,
     recipient: string,
     token: string,
-  ): Promise<{ devLink: string | null }>;
+  ): Promise<void>;
   processDueEmails(now?: Date): Promise<number>;
 }
 
@@ -130,7 +139,7 @@ const EMAIL_META: Record<EmailKind, { subject: string; buttonLabel: string; expi
 export function createEmailService(deps: {
   outbox: OutboxRepository;
   provider: EmailProvider;
-  config: Pick<Config, "nodeEnv" | "emailFrom" | "frontendUrl" | "emailRetryMax" | "emailRetryBackoffMs">;
+  config: Pick<Config, "emailFrom" | "frontendUrl" | "emailRetryMax" | "emailRetryBackoffMs">;
   keys: readonly EncryptionKeyEntry[];
   logger: pino.Logger;
 }): EmailService {
@@ -146,11 +155,7 @@ export function createEmailService(deps: {
       kind === "verify-email"
         ? `/verify-email?token=${encodeURIComponent(token)}`
         : `/reset-password?token=${encodeURIComponent(token)}`;
-    const frontendUrl =
-      config.nodeEnv === "production"
-        ? normalizeFrontendUrlForProduction(config.frontendUrl)
-        : normalizeFrontendUrlForDevelopment(config.frontendUrl);
-    const url = `${frontendUrl}${path}`;
+    const url = `${config.frontendUrl}${path}`;
     const expiryNote = `This link expires in ${meta.expiresIn}.`;
     const body =
       `${meta.subject}\n\n` +
@@ -181,7 +186,6 @@ export function createEmailService(deps: {
         tokenRef: sealedUrl.encrypted,
         messageId: createId("eml"),
       });
-      return { devLink: provider.kind === "console" ? url : null };
     },
 
     async processDueEmails(now = new Date()) {

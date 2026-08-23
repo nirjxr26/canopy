@@ -1,8 +1,9 @@
 import { Router } from "express";
-import { randomUUID } from "node:crypto";
 import type { Config } from "../../infrastructure/config/config.js";
 import type { RateLimiter } from "../../infrastructure/ratelimit/rate-limiter.js";
 import type { SessionService } from "../../modules/session/session-service.js";
+import type { JwtSigner } from "../../modules/jwt/jwt-service.js";
+import { ulid } from "../../infrastructure/crypto/ulid.js";
 import { createRateLimit, ipKeyFn } from "../middleware/rate-limit.js";
 import { createRequireSession, requireAuth } from "../middleware/require-session.js";
 
@@ -10,10 +11,11 @@ export interface TokensRouterDeps {
   config: Config;
   limiter: RateLimiter;
   sessions: SessionService;
+  jwtSigner: JwtSigner;
 }
 
 /** POST /auth/tokens — exchange an authenticated session for a short-lived RS256 JWT */
-export function createTokensRouter({ config, limiter, sessions }: TokensRouterDeps): Router {
+export function createTokensRouter({ config, limiter, sessions, jwtSigner }: TokensRouterDeps): Router {
   const router = Router();
   const requireSession = createRequireSession(sessions, config);
 
@@ -30,9 +32,9 @@ export function createTokensRouter({ config, limiter, sessions }: TokensRouterDe
         status: user.status,
         iss: config.jwtIssuer,
         aud: config.jwtAudience ?? config.jwtIssuer,
-        jti: randomUUID(),
+        jti: ulid(),
       };
-      const jwt = await (await import("../../modules/jwt/jwt-service.js")).mintJwt(payload, config);
+      const jwt = await jwtSigner.mintJwt(payload);
       res.json({ accessToken: jwt, expiresIn: config.jwtAccessTtlSeconds, tokenType: "Bearer", expiresAt: new Date(Date.now() + config.jwtAccessTtlSeconds * 1000) });
     },
   );

@@ -62,7 +62,7 @@ async function main() {
   }
 
   // Helper: get recovery codes from confirm response
-  let recoveryCodes = [];
+  let recoveryCodes;
 
   try {
     // ─── 1. Health ───
@@ -222,10 +222,10 @@ async function main() {
     const verifyForSession = await req("POST", "/api/v1/auth/verify", { mfaToken: loginMfa5.body.mfaToken, code: totpCode3 });
     assert("got session for disable", verifyForSession.status === 200, `got ${verifyForSession.status}`);
 
-    const disableBad = await req("POST", "/api/v1/auth/disable", { code: "000000" }, verifyForSession.cookie);
+    const disableBad = await req("POST", "/api/v1/auth/disable", { currentPassword: PASSWORD, code: "000000" }, verifyForSession.cookie);
     assert("disable wrong code 400", disableBad.status === 400, `got ${disableBad.status}`);
 
-    const disableGood = await req("POST", "/api/v1/auth/disable", { code: totpCode3 }, verifyForSession.cookie);
+    const disableGood = await req("POST", "/api/v1/auth/disable", { currentPassword: PASSWORD, code: totpCode3 }, verifyForSession.cookie);
     assert("disable correct code 204", disableGood.status === 204, `got ${disableGood.status}`);
 
     // ─── 18. After disable, login no longer requires MFA ───

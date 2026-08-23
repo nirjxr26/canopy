@@ -25,7 +25,10 @@ function base32Encode(buf: Buffer): string {
 
 function base32Decode(input: string): Buffer {
   if (typeof input !== "string" || !input) return Buffer.alloc(0);
-  const cleaned = input.toUpperCase().replace(/=+$/, "");
+  let cleaned = input.toUpperCase();
+  while (cleaned.endsWith("=")) {
+    cleaned = cleaned.slice(0, -1);
+  }
   const bytes: number[] = [];
   let bits = 0;
   let value = 0;

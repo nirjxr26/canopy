@@ -63,9 +63,8 @@ export async function waitForOutboxRow(
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const pollMs = options.pollMs ?? DEFAULT_POLL_MS;
   const deadline = Date.now() + timeoutMs;
-  let last: OutboxDbRow | null = null;
   while (Date.now() < deadline) {
-    last = await findOutboxRow(recipient, subject);
+    const last = await findOutboxRow(recipient, subject);
     if (last !== null) {
       return last;
     }
@@ -110,7 +109,7 @@ function unsealBody(body: string): string {
 
 export function extractTokenFromEmail(row: OutboxDbRow): string {
   const body = unsealBody(row.body);
-  const match = body.match(/[?&]token=([A-Za-z0-9_-]+)/);
+  const match = /[?&]token=([A-Za-z0-9_-]+)/.exec(body);
   if (match === null) {
     throw new Error(`no token found in email body for ${row.recipient} / ${row.subject}`);
   }

@@ -78,7 +78,6 @@ function makeApp(): TestHarness {
   const tokens = createTokenService(createTokenRepository(db));
   const mfa = createMfaService({
     repository: createMfaRepository(db),
-    tokens,
     db,
     keys: config.mfaEncryptionKeys,
     issuer: config.jwtIssuer,
@@ -162,7 +161,7 @@ async function signupAndVerifyEmail(harness: TestHarness, email: string): Promis
   const token = tokenFromBody(unsealBody(message.body, harness.keys));
   const verifyRes = await verifyEmail(harness, token);
   expect(verifyRes.status).toBe(200);
-  return signupRes.body.user.id as string;
+  return verifyRes.body.user.id as string;
 }
 
 async function eventsFor(
@@ -209,6 +208,20 @@ describeDb("security events", () => {
     expect(signupRow.metadata).toEqual({});
   });
 
+  it("strips non-whitelisted metadata keys (R-27)", async () => {
+    const service = createSecurityEventService(createSecurityEventRepository(harness.db));
+    await service.record({
+      eventType: "LOGIN_FAILURE",
+      metadata: { reason: "bad_password", password: "hunter2", token: "raw-secret", custom: 1 },
+    });
+    const row = await harness.db
+      .selectFrom("security_events")
+      .selectAll()
+      .orderBy("id", "desc")
+      .executeTakeFirstOrThrow();
+    expect(row.metadata).toEqual({ reason: "bad_password" });
+  });
+
   it("records LOGIN_FAILURE and LOGIN_SUCCESS around a bad then good password", async () => {
     const email = "events-login@example.com";
     const userId = await signupAndVerifyEmail(harness, email);
@@ -229,14 +242,13 @@ describeDb("security events", () => {
     expect(loginRelated.every((e) => e.actor === "USER")).toBe(true);
   });
 
-  it("records SYSTEM-actor introspect events for accepted and rejected tokens", async () => {
+  it("records SYSTEM-actor rejection events and does not record introspect successes", async () => {
     const email = "events-introspect@example.com";
     const userId = await signupAndVerifyEmail(harness, email);
     const { token } = await harness.sessions.createSession({ userId });
 
     const validRes = await request(harness.app)
       .post(`${BASE_URL}/introspect`)
-      .set("Origin", ORIGIN)
       .set("X-Service-Key", SERVICE_KEY)
       .send({ sessionSecret: token });
     expect(validRes.status).toBe(200);
@@ -244,7 +256,6 @@ describeDb("security events", () => {
 
     const rejectedRes = await request(harness.app)
       .post(`${BASE_URL}/introspect`)
-      .set("Origin", ORIGIN)
       .set("X-Service-Key", SERVICE_KEY)
       .send({ sessionSecret: "definitely-not-a-real-secret" });
     expect(rejectedRes.status).toBe(200);
@@ -256,8 +267,7 @@ describeDb("security events", () => {
       .where("user_id", "=", userId)
       .where("event_type", "=", "INTROSPECT_SUCCESS")
       .execute();
-    expect(successRows).toHaveLength(1);
-    expect(successRows[0]!.actor).toBe("SYSTEM");
+    expect(successRows).toHaveLength(0);
 
     const rejectedRows = await harness.db
       .selectFrom("security_events")

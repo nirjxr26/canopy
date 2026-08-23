@@ -1,4 +1,5 @@
 import express from "express";
+import helmet from "helmet";
 import { pinoHttp } from "pino-http";
 import type pino from "pino";
 import type { Kysely } from "kysely";
@@ -16,6 +17,8 @@ import {
   createNoopSecurityEventService,
   type SecurityEventService,
 } from "../modules/security-events/security-events-service.js";
+import type { JwtSigner } from "../modules/jwt/jwt-service.js";
+import { createJwtSigner } from "../modules/jwt/jwt-service.js";
 import { createAuthFlows } from "../modules/identity/auth-flows.js";
 import { sanitizeUrl } from "../infrastructure/logging/logger.js";
 import { requestIdMiddleware } from "./middleware/request-id.js";
@@ -23,7 +26,7 @@ import { createErrorHandler, notFoundHandler } from "./middleware/error-handler.
 import { createOriginCheck } from "./middleware/origin-check.js";
 import { createRateLimit, ipKeyFn } from "./middleware/rate-limit.js";
 import { createHealthRouter } from "./routes/health.js";
-import { createAuthRouter } from "./routes/auth.js";
+import { createAuthRouter, createIntrospectRouter } from "./routes/auth.js";
 import { createRecoveryRouter } from "./routes/recovery.js";
 import { createMfaRouter } from "./routes/mfa.js";
 import { createTokensRouter } from "./routes/tokens.js";
@@ -43,6 +46,7 @@ export interface AppDeps {
   provider: EmailProvider;
   keys: readonly EncryptionKeyEntry[];
   securityEvents?: SecurityEventService;
+  jwtSigner?: JwtSigner;
 }
 
 export function createApp(deps: AppDeps): express.Express {
@@ -60,7 +64,9 @@ export function createApp(deps: AppDeps): express.Express {
     provider,
     keys,
     securityEvents = createNoopSecurityEventService(),
+    jwtSigner: signerDep,
   } = deps;
+  const jwtSigner = signerDep ?? createJwtSigner(config);
   const app = express();
   const flows = createAuthFlows({ db, hasher, config, provider, keys, logger });
 
@@ -69,19 +75,16 @@ export function createApp(deps: AppDeps): express.Express {
     app.set("trust proxy", config.trustProxy);
   }
 
-  if (config.httpsEnforced) {
-    app.use((req, res, next) => {
-      if (!req.secure) {
-        res.status(403).json({
-          error: { code: "HTTPS_REQUIRED", message: "HTTPS is required" },
-        });
-        return;
-      }
-      next();
-    });
-  }
-
   app.use(requestIdMiddleware);
+  // §6.10: security headers on every response, including error responses.
+  app.use(
+    helmet({
+      contentSecurityPolicy: { directives: { "default-src": ["'self'"] } },
+      frameguard: { action: "deny" },
+      hsts: { maxAge: 63072000, includeSubDomains: true },
+      referrerPolicy: { policy: "strict-origin-when-cross-origin" },
+    }),
+  );
   app.use(
     pinoHttp({
       logger,
@@ -102,12 +105,30 @@ export function createApp(deps: AppDeps): express.Express {
       },
     }),
   );
+  // After request-id/helmet/logging so HTTPS 403s carry X-Request-Id,
+  // security headers, and an access-log entry.
+  if (config.httpsEnforced) {
+    app.use((req, res, next) => {
+      if (!req.secure) {
+        res.status(403).json({
+          error: { code: "HTTPS_REQUIRED", message: "HTTPS is required" },
+        });
+        return;
+      }
+      next();
+    });
+  }
   app.use(express.json({ limit: "256kb" }));
+  // Mounted before the Origin check: introspect authenticates via service key (§8.1).
+  app.use(
+    "/api/v1/auth/introspect",
+    createIntrospectRouter({ config, limiter, sessions, users, securityEvents }),
+  );
   app.use(createOriginCheck(config.allowedOrigins));
 
   app.use(
     "/api/v1/auth/tokens",
-    createTokensRouter({ config, limiter, sessions }),
+    createTokensRouter({ config, limiter, sessions, jwtSigner }),
   );
 
   /** GET /.well-known/jwks.json - public verification keys (no private material) */
@@ -116,9 +137,7 @@ export function createApp(deps: AppDeps): express.Express {
     createRateLimit(limiter, config.rateLimits.jwks, ipKeyFn),
     async (_req, res, next) => {
       try {
-        const { buildJwks } = await import("../modules/jwt/jwt-service.js");
-        const jwks = await buildJwks(config);
-        res.type("json").send(jwks);
+        res.type("json").send(await jwtSigner.buildJwks());
       } catch (err) {
         next(err);
       }

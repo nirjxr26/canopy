@@ -1,6 +1,10 @@
 import { AppError, ERROR_CODES } from "../../shared/app-error.js";
 import { createId } from "../../infrastructure/crypto/ulid.js";
 import type { PasswordHasher } from "../../infrastructure/crypto/password.js";
+import {
+  breachedPasswords,
+  containsEmailIdentity,
+} from "../../infrastructure/crypto/breached-passwords.js";
 import { normalizeEmail } from "./email-normalizer.js";
 import { assertTransition } from "./account-state-policy.js";
 import type { UserRecord, UserRepository, UserUpdate, UserWithPasswordHash } from "./user-repository.js";
@@ -8,11 +12,17 @@ import type { UserRecord, UserRepository, UserUpdate, UserWithPasswordHash } fro
 export const PASSWORD_MIN_LENGTH = 12;
 export const PASSWORD_MAX_LENGTH = 128;
 
+export interface PasswordPolicyContext {
+  /** Account identity — passwords embedding it are rejected (NIST 800-63B). */
+  email?: string;
+}
+
 export interface PasswordRequirement {
   label: string;
   met: boolean;
 }
 
+/** §6.5: length-only policy (complexity rules intentionally not used). */
 export function getPasswordRequirements(password: string): PasswordRequirement[] {
   return [
     {
@@ -23,10 +33,6 @@ export function getPasswordRequirements(password: string): PasswordRequirement[]
       label: `No more than ${PASSWORD_MAX_LENGTH} characters`,
       met: password.length <= PASSWORD_MAX_LENGTH,
     },
-    { label: "Contains an uppercase letter", met: /[A-Z]/.test(password) },
-    { label: "Contains a lowercase letter", met: /[a-z]/.test(password) },
-    { label: "Contains a number", met: /\d/.test(password) },
-    { label: "Contains a special character", met: /[^A-Za-z0-9]/.test(password) },
   ];
 }
 
@@ -49,12 +55,16 @@ export interface UserService {
   updateProfile(id: string, input: { firstName?: string | null; lastName?: string | null }): Promise<UserRecord | null>;
   verifyEmail(id: string, now?: Date): Promise<void>;
   recordLogin(id: string, now?: Date): Promise<void>;
-  updatePassword(id: string, newPassword: string): Promise<void>;
+  updatePassword(id: string, newPassword: string, context?: PasswordPolicyContext): Promise<void>;
   lockUntil(id: string, until: Date): Promise<void>;
   rehashPasswordIfNeeded(id: string, hash: string, plain: string): Promise<void>;
 }
 
-export function assertPasswordPolicy(password: string): void {
+/**
+ * §6.5 policy: min/max length + breached-password blocklist + must-not-contain
+ * account identity. Server-side is the single source of truth (R-9).
+ */
+export function assertPasswordPolicy(password: string, context?: PasswordPolicyContext): void {
   const unmet = getPasswordRequirements(password)
     .filter((r) => !r.met)
     .map((r) => r.label);
@@ -62,6 +72,18 @@ export function assertPasswordPolicy(password: string): void {
     throw new AppError(
       ERROR_CODES.VALIDATION,
       `Password must meet all requirements: ${unmet.join(", ")}.`,
+    );
+  }
+  if (breachedPasswords.isBreached(password)) {
+    throw new AppError(
+      ERROR_CODES.VALIDATION,
+      "This password appears in known data breaches — choose something more unique.",
+    );
+  }
+  if (context?.email && containsEmailIdentity(password, context.email)) {
+    throw new AppError(
+      ERROR_CODES.VALIDATION,
+      "Password must not contain your email address.",
     );
   }
 }
@@ -77,9 +99,12 @@ async function registerUser(
   } catch {
     throw new AppError(ERROR_CODES.VALIDATION, "Invalid email address");
   }
-  assertPasswordPolicy(input.password);
+  assertPasswordPolicy(input.password, { email });
   const existing = await repository.findByEmail(email);
   if (existing !== null) {
+    // §6.1 signup timing uniformity: burn one full argon2 verify so duplicate
+    // signups cost the same as fresh ones — latency must not reveal existence.
+    await hasher.verify(await hasher.dummyHash(), input.password);
     return { created: false, user: existing };
   }
   const passwordHash = await hasher.hash(input.password);
@@ -95,7 +120,9 @@ async function registerUser(
     return { created: true, user: inserted };
   } catch (err) {
     if (isUniqueViolation(err, "users_email_key")) {
-      const winner = await repository.findByEmail(email, true);
+      // The partial unique index only covers live rows (deleted_at IS NULL),
+      // so the conflicting row is always a live duplicate.
+      const winner = await repository.findByEmail(email);
       return { created: false, user: winner };
     }
     throw err;
@@ -166,8 +193,8 @@ export function createUserService(
       }
     },
 
-    async updatePassword(id, newPassword) {
-      assertPasswordPolicy(newPassword);
+    async updatePassword(id, newPassword, context?: PasswordPolicyContext) {
+      assertPasswordPolicy(newPassword, context);
       const passwordHash = await hasher.hash(newPassword);
       const updated = await repository.update(id, { passwordHash, updatedAt: new Date() });
       if (!updated) {

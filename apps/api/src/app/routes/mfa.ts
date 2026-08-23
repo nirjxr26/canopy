@@ -6,6 +6,7 @@ import type { RateLimiter } from "../../infrastructure/ratelimit/rate-limiter.js
 import type { UserService } from "../../modules/identity/user-service.js";
 import type { SessionService } from "../../modules/session/session-service.js";
 import type { TokenService } from "../../modules/identity/token-service.js";
+import { canLogin } from "../../modules/identity/account-state-policy.js";
 
 import type { MfaService } from "../../modules/mfa/mfa-service.js";
 import type { SecurityEventService } from "../../modules/security-events/security-events-service.js";
@@ -44,8 +45,9 @@ export function createMfaRouter({
     requireSession,
     async (req, res) => {
       const { user } = requireAuth(req);
-      const { challenge, secret, otpauthUrl } = await mfa.enroll(user);
-      res.status(200).json({ challenge, secret, otpauthUrl });
+      // Re-enrolling replaces any prior pending secret (§4 / H-19-A).
+      const { secret, otpauthUrl } = await mfa.enroll(user);
+      res.status(200).json({ secret, otpauthUrl });
     },
   );
 
@@ -56,9 +58,8 @@ export function createMfaRouter({
     async (req, res) => {
       const { user } = requireAuth(req);
       const body = req.body ?? {};
-      const challenge = typeof body.challenge === "string" ? body.challenge : "";
       const code = typeof body.code === "string" ? body.code : "";
-      const { recoveryCodes } = await mfa.confirm(user, challenge, code);
+      const { recoveryCodes } = await mfa.confirm(user.id, code);
       await securityEvents?.record({
         eventType: "MFA_ENROLLED",
         userId: user.id,
@@ -82,9 +83,9 @@ export function createMfaRouter({
       if (pending === null) {
         throw new AppError(ERROR_CODES.TOKEN_INVALID, "Session expired — sign in again");
       }
-      const totpOk = await mfa.verifyCode(pending.userId, code);
-      const codeValid = totpOk || (await mfa.consumeRecoveryCode(pending.userId, code));
-      if (!codeValid) {
+      // Code verification + recovery burn + token claim happen atomically (H-17).
+      const outcome = await mfa.completePendingLogin(pending, mfaToken, code, now);
+      if (outcome.status === "invalid_code") {
         await securityEvents?.record({
           eventType: "MFA_FAILURE",
           userId: pending.userId,
@@ -96,18 +97,19 @@ export function createMfaRouter({
         if (fails === null) {
           throw new AppError(ERROR_CODES.TOKEN_INVALID, "Session expired — sign in again");
         }
-        if (fails >= 5) {
+        if (fails >= config.mfaMaxFailedAttempts) {
           await tokens.markUsed(pending.id, now);
           throw new AppError(ERROR_CODES.MFA_INVALID, "Too many failed attempts — sign in again");
         }
         throw new AppError(ERROR_CODES.MFA_INVALID, "Invalid code");
       }
-      const claimedUserId = await tokens.consume("MFA_PENDING", mfaToken, now);
-      if (claimedUserId === null) {
+      const user = await users.getById(outcome.userId);
+      if (user === null) {
         throw new AppError(ERROR_CODES.TOKEN_INVALID, "Session expired — sign in again");
       }
-      const user = await users.getById(claimedUserId);
-      if (user === null) {
+      // Re-check account state at session-mint time: the account may have been
+      // suspended/locked/deactivated after login but before MFA completion.
+      if (!canLogin(user).allowed) {
         throw new AppError(ERROR_CODES.TOKEN_INVALID, "Session expired — sign in again");
       }
       const { token } = await sessions.createSession({
@@ -123,7 +125,7 @@ export function createMfaRouter({
         userAgent: req.header("user-agent"),
         correlationId: req.requestId,
       });
-      if (!totpOk) {
+      if (outcome.usedRecoveryCode) {
         await securityEvents?.record({
           eventType: "RECOVERY_CODE_USED",
           userId: user.id,

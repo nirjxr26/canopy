@@ -35,6 +35,7 @@ const envSchema = z.object({
   LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"]).default("info"),
   TRUST_PROXY: intFrom(0).default(0),
   HTTPS_ENFORCED: boolFromString.default(false),
+  RUN_MIGRATIONS_ON_BOOT: boolFromString.default(false),
   DATABASE_URL: z.string().min(1),
   DB_POOL_MIN: intFrom(0).default(2),
   DB_POOL_MAX: intFrom(1).default(10),
@@ -56,8 +57,7 @@ const envSchema = z.object({
   REDIS_URL: z.string().min(1).default("redis://localhost:6379"),
   RATE_LIMITS_JSON: z.string().optional(),
   LOCK_DURATION_MIN: intFrom(1).default(15),
-  LOCK_ESCALATION_COUNT: intFrom(1).default(5),
-  CAPTCHA_CHALLENGER: z.enum(["none"]).default("none"),
+  MFA_MAX_FAILED_ATTEMPTS: intFrom(1).default(5),
   SERVICE_API_KEY: z.string().optional(),
   JWT_PRIVATE_KEY: z.string().optional(),
   JWT_ISSUER: z.string().min(1).optional(),
@@ -84,6 +84,7 @@ export interface Config {
   readonly logLevel: z.infer<typeof envSchema>["LOG_LEVEL"];
   readonly trustProxy: number;
   readonly httpsEnforced: boolean;
+  readonly runMigrationsOnBoot: boolean;
   readonly databaseUrl: string;
   readonly dbPoolMin: number;
   readonly dbPoolMax: number;
@@ -105,8 +106,7 @@ export interface Config {
   readonly redisUrl: string;
   readonly rateLimits: Record<RateLimitName, RateLimitSpec>;
   readonly lockDurationMin: number;
-  readonly lockEscalationCount: number;
-  readonly captchaChallenger: "none";
+  readonly mfaMaxFailedAttempts: number;
   readonly serviceApiKey: string | undefined;
   readonly jwtPrivateKey: string | undefined;
   readonly jwtIssuer: string;
@@ -163,6 +163,9 @@ function requireProdSecrets(parsed: z.infer<typeof envSchema>): void {
   if (parsed.JWT_PRIVATE_KEY === undefined || parsed.JWT_PRIVATE_KEY.length < 16) {
     failures.push("JWT_PRIVATE_KEY (RS256 PEM)");
   }
+  if (parsed.JWT_KID === undefined || parsed.JWT_KID.length === 0) {
+    failures.push("JWT_KID");
+  }
   if (failures.length > 0) {
     throw new ConfigError(
       `Production configuration is insecure. Set: ${failures.join(", ")}. Refusing to start.`,
@@ -194,10 +197,10 @@ function requireProdHttps(parsed: z.infer<typeof envSchema>): void {
 }
 
 function parseAllowedOrigins(parsed: z.infer<typeof envSchema>): string[] {
-  const origins = parsed.ALLOWED_ORIGINS
+  const entries = parsed.ALLOWED_ORIGINS
     ? parsed.ALLOWED_ORIGINS.split(",").map((s) => s.trim()).filter(Boolean)
     : [parsed.FRONTEND_URL, parsed.AUTH_BASE_URL];
-  const invalid = origins.filter((origin) => {
+  const invalid = entries.filter((origin) => {
     try {
       new URL(origin);
       return false;
@@ -209,6 +212,16 @@ function parseAllowedOrigins(parsed: z.infer<typeof envSchema>): string[] {
     throw new ConfigError(
       `Invalid configuration: ALLOWED_ORIGINS entries must be valid URLs: ${invalid.join(", ")}`,
     );
+  }
+  // Canonicalize to bare origins so Origin-header comparison can't miss on case,
+  // trailing path, or explicit default ports; URL drops default ports itself.
+  const origins: string[] = [];
+  for (const entry of entries) {
+    const u = new URL(entry);
+    const canonical = `${u.protocol}//${u.host.toLowerCase()}`;
+    if (!origins.includes(canonical)) {
+      origins.push(canonical);
+    }
   }
   return origins;
 }
@@ -244,6 +257,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): Config {
     logLevel: parsed.LOG_LEVEL,
     trustProxy: parsed.TRUST_PROXY,
     httpsEnforced: parsed.HTTPS_ENFORCED,
+    runMigrationsOnBoot: parsed.RUN_MIGRATIONS_ON_BOOT,
     databaseUrl: parsed.DATABASE_URL,
     dbPoolMin: parsed.DB_POOL_MIN,
     dbPoolMax: parsed.DB_POOL_MAX,
@@ -265,8 +279,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): Config {
     redisUrl: parsed.REDIS_URL,
     rateLimits: Object.freeze(rateLimits),
     lockDurationMin: parsed.LOCK_DURATION_MIN,
-    lockEscalationCount: parsed.LOCK_ESCALATION_COUNT,
-    captchaChallenger: parsed.CAPTCHA_CHALLENGER,
+    mfaMaxFailedAttempts: parsed.MFA_MAX_FAILED_ATTEMPTS,
     serviceApiKey: parsed.SERVICE_API_KEY,
     jwtPrivateKey: parsed.JWT_PRIVATE_KEY,
     jwtIssuer: parsed.JWT_ISSUER ?? parsed.AUTH_BASE_URL,

@@ -6,6 +6,7 @@ import type { SessionService, SessionListItem } from "../../modules/session/sess
 import type { SecurityEventService } from "../../modules/security-events/security-events-service.js";
 import { createRateLimit, ipKeyFn } from "../middleware/rate-limit.js";
 import { createRequireSession, requireAuth } from "../middleware/require-session.js";
+import { sessionCookieName } from "../../modules/session/session-service.js";
 
 function toSessionJson(session: SessionListItem) {  return {
     id: session.id,
@@ -41,7 +42,7 @@ export function createSessionsRouter({
     async (req, res) => {
       const { session, user } = requireAuth(req);
       const items = await sessions.listByUser(user.id, session.id);
-      res.status(200).json({ sessions: items.filter((s) => s.revokedAt === null).map(toSessionJson) });
+      res.status(200).json({ sessions: items.map(toSessionJson) });
     },
   );
 
@@ -67,8 +68,7 @@ export function createSessionsRouter({
         correlationId: req.requestId,
       });
       if (id === session.id) {
-        res.clearCookie("ap_session", { path: "/" });
-        res.clearCookie("__Host-ap_session", { path: "/", secure: config.cookieSecure });
+        res.clearCookie(sessionCookieName(config.cookieSecure), { path: "/", secure: config.cookieSecure });
       }
       res.status(204).end();
     },
@@ -100,8 +100,7 @@ export function createSessionsAllRouter({
         userAgent: req.header("user-agent"),
         correlationId: req.requestId,
       });
-      res.clearCookie("ap_session", { path: "/" });
-      res.clearCookie("__Host-ap_session", { path: "/", secure: config.cookieSecure });
+      res.clearCookie(sessionCookieName(config.cookieSecure), { path: "/", secure: config.cookieSecure });
       res.status(204).end();
     },
   );

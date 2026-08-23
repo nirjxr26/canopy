@@ -4,7 +4,8 @@ import { sessionCookieName } from "../../modules/session/session-service.js";
 export interface CookieOptions {
   httpOnly?: boolean;
   secure?: boolean;
-  sameSite?: "strict" | "lax" | "none";
+  // "none" excluded: SameSite=None requires Secure; use config.cookieSecure instead.
+  sameSite?: "strict" | "lax";
   maxAgeMs?: number;
   path?: string;
 }

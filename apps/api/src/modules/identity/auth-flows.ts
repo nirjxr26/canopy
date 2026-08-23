@@ -10,10 +10,14 @@ import { createTokenRepository } from "./token-repository.js";
 import { createTokenService } from "./token-service.js";
 import { createUserRepository } from "./user-repository.js";
 import { createUserService } from "./user-service.js";
-import type { RegisterInput, RegisterResult } from "./user-service.js";
+import type { RegisterInput } from "./user-service.js";
 
-export interface SignupResult extends RegisterResult {
-  devEmailLink: string | null;
+export type SignupOutcome = "created" | "duplicate_active" | "duplicate_pending_renewed";
+
+export interface SignupResult {
+  outcome: SignupOutcome;
+  /** Internal only — for the security-event log. Never leaves the API (§6.1). */
+  userId?: string;
 }
 
 export interface AuthFlows {
@@ -46,12 +50,23 @@ export function createAuthFlows(deps: {
         });
         const result = await users.register(input);
         const user = result.user;
-        if (user?.status !== "PENDING_VERIFICATION") {
-          return { ...result, devEmailLink: null };
+        if (result.created && user !== null) {
+          const token = await tokens.issue("EMAIL_VERIFICATION", user.id);
+          await emails.queue("verify-email", user.email, token);
+          return { outcome: "created", userId: user.id };
         }
-        const token = await tokens.issue("EMAIL_VERIFICATION", user.id);
-        const devEmailLink = (await emails.queue("verify-email", user.email, token)).devLink;
-        return { ...result, devEmailLink };
+        if (user?.status === "PENDING_VERIFICATION") {
+          // Renew the pending verification: issuing a fresh link invalidates all
+          // previous ones, so only the newest email works (§6.1, no flooding of
+          // evergreen links).
+          await tokens.invalidateAll("EMAIL_VERIFICATION", user.id);
+          const token = await tokens.issue("EMAIL_VERIFICATION", user.id);
+          await emails.queue("verify-email", user.email, token);
+          return { outcome: "duplicate_pending_renewed", userId: user.id };
+        }
+        // Active/other state: send nothing — an attacker must not be able to
+        // force emails to an already-active account.
+        return { outcome: "duplicate_active", userId: user?.id };
       });
     },
 
@@ -73,11 +88,21 @@ export function createAuthFlows(deps: {
         const users = createUserService(createUserRepository(tx), hasher);
         const tokens = createTokenService(createTokenRepository(tx));
         const sessions = createSessionRepository(tx);
+        // Resolve identity first so the policy can reject passwords embedding
+        // the account's own email.
+        const pending = await tokens.findByHash("PASSWORD_RESET", rawToken, now);
+        if (pending === null) {
+          return null;
+        }
+        const target = await users.getById(pending.userId);
+        if (target === null) {
+          return null;
+        }
         const userId = await tokens.consume("PASSWORD_RESET", rawToken, now);
         if (userId === null) {
           return null;
         }
-        await users.updatePassword(userId, newPassword);
+        await users.updatePassword(userId, newPassword, { email: target.email });
         await sessions.revokeAll(userId);
         return userId;
       });

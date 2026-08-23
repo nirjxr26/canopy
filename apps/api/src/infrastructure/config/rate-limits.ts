@@ -9,7 +9,7 @@ export const DEFAULT_RATE_LIMITS = {
   loginAccount: { limit: 5, windowMs: 900_000 },
   signup: { limit: 5, windowMs: 3_600_000 },
   forgotPassword: { limit: 5, windowMs: 3_600_000 },
-  resetPassword: { limit: 5, windowMs: 3_600_000 },
+  resetPassword: { limit: 10, windowMs: 3_600_000 },
   resendVerification: { limit: 3, windowMs: 3_600_000 },
   verifyEmail: { limit: 10, windowMs: 3_600_000 },
   changePassword: { limit: 5, windowMs: 900_000 },

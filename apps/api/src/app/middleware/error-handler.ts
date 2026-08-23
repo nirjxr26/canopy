@@ -31,8 +31,14 @@ export function createErrorHandler(logger?: pino.Logger) {
     err: unknown,
     req: Request,
     res: Response,
-    _next: NextFunction,
+    next: NextFunction,
   ): void {
+    // If the response already started, delegate to Express's default handler
+    // instead of throwing from inside the error handler itself.
+    if (res.headersSent) {
+      next(err);
+      return;
+    }
     const requestId = req.requestId;
 
     if (err instanceof SyntaxError && "body" in err) {

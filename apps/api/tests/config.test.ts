@@ -47,6 +47,31 @@ describe("config", () => {
     expect(() => load({ ALLOWED_ORIGINS: "https://app.example.com,garbage" })).toThrow(ConfigError);
   });
 
+  it("canonicalizes ALLOWED_ORIGINS entries to bare origins and dedupes preserving order", () => {
+    const config = load({
+      ALLOWED_ORIGINS:
+        "HTTPS://App.Example.com:443/, https://app.example.com, http://other.example.com:80, https://api.example.com",
+    });
+    expect(config.allowedOrigins).toEqual([
+      "https://app.example.com",
+      "http://other.example.com",
+      "https://api.example.com",
+    ]);
+  });
+
+  it("leaves frontendUrl and authBaseUrl as configured (no canonicalization)", () => {
+    const config = load({ FRONTEND_URL: "https://App.Example.com/", AUTH_BASE_URL: "https://Auth.Example.com/" });
+    expect(config.frontendUrl).toBe("https://App.Example.com/");
+    expect(config.authBaseUrl).toBe("https://Auth.Example.com/");
+    expect(config.allowedOrigins).toEqual(["https://app.example.com", "https://auth.example.com"]);
+  });
+
+  it("defaults MFA_MAX_FAILED_ATTEMPTS and accepts overrides", () => {
+    expect(load().mfaMaxFailedAttempts).toBe(5);
+    expect(load({ MFA_MAX_FAILED_ATTEMPTS: "3" }).mfaMaxFailedAttempts).toBe(3);
+    expect(() => load({ MFA_MAX_FAILED_ATTEMPTS: "0" })).toThrow(ConfigError);
+  });
+
   it("fails fast when MFA_ENCRYPTION_KEYS is malformed", () => {
     expect(() => load({ MFA_ENCRYPTION_KEYS: "not-a-key-list" })).toThrow(ConfigError);
   });
@@ -134,6 +159,7 @@ describe("config", () => {
       RATE_LIMITER_BACKEND: "redis",
       SERVICE_API_KEY: "0123456789abcdef",
       JWT_PRIVATE_KEY: "0123456789abcdef0123456789abcdef",
+      JWT_KID: "prod-key-1",
     };
 
     it("refuses to start when prod-required secrets are missing", () => {
@@ -150,9 +176,14 @@ describe("config", () => {
       );
     });
 
-    it("refuses to start with short service key in prod", () => {
-      expect(() => load({ ...HARDENED, SERVICE_API_KEY: "short" })).toThrow(/SERVICE_API_KEY/);
-    });
+  it("refuses to start with short service key in prod", () => {
+    expect(() => load({ ...HARDENED, SERVICE_API_KEY: "short" })).toThrow(/SERVICE_API_KEY/);
+  });
+
+  it("refuses to start without JWT_KID in prod", () => {
+    const { JWT_KID: _removed, ...rest } = HARDENED;
+    expect(() => load(rest)).toThrow(/JWT_KID/);
+  });
 
     it("accepts a fully hardened production env", () => {
       const config = load(HARDENED);

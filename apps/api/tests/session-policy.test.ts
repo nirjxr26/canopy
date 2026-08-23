@@ -63,7 +63,6 @@ function makeApp(): TestHarness {
   const tokens = createTokenService(createTokenRepository(db));
   const mfa = createMfaService({
     repository: createMfaRepository(db),
-    tokens,
     db,
     keys: config.mfaEncryptionKeys,
     issuer: config.jwtIssuer,

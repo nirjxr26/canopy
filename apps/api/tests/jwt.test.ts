@@ -1,7 +1,7 @@
 import { beforeAll, expect, it } from "vitest";
 import request from "supertest";
 import { generateKeyPairSync } from "node:crypto";
-import { jwtVerify, importSPKI } from "jose";
+import { jwtVerify, importSPKI, decodeProtectedHeader } from "jose";
 import { createApp } from "../src/app/app.js";
 import { loadConfig } from "../src/infrastructure/config/config.js";
 import { createLogger } from "../src/infrastructure/logging/logger.js";
@@ -20,7 +20,8 @@ import { createSessionRepository } from "../src/modules/session/session-reposito
 import { createSessionService } from "../src/modules/session/session-service.js";
 import { describeDb, resetTestDatabase, TEST_DATABASE_URL, TEST_MFA_KEY } from "./helpers/db.js";
 import { migrateToLatest } from "../src/infrastructure/db/migrate.js";
-import { makeJwtKey, validateJwtKey } from "../src/modules/jwt/jwt-service.js";
+import { createJwtSigner } from "../src/modules/jwt/jwt-service.js";
+import { isUlid } from "../src/infrastructure/crypto/ulid.js";
 
 const PASSWORD = "Correct-horse-battery-staple-1";
 const ORIGIN = "http://localhost:5173";
@@ -55,7 +56,7 @@ function makeHarness() {
   const users = createUserService(createUserRepository(db), hasher);
   const sessions = createSessionService(createSessionRepository(db), { getById: users.getById }, config);
   const tokens = createTokenService(createTokenRepository(db));
-  const mfa = createMfaService({ repository: createMfaRepository(db), tokens, db, keys: config.mfaEncryptionKeys, issuer: config.jwtIssuer });
+  const mfa = createMfaService({ repository: createMfaRepository(db), db, keys: config.mfaEncryptionKeys, issuer: config.jwtIssuer });
   const emails = createEmailService({ outbox: createOutboxRepository(db), provider: { kind: "console", send: async () => {} }, config, keys: config.mfaEncryptionKeys, logger });
   const app = createApp({ config, logger, db, hasher, limiter, users, sessions, tokens, emails, mfa, provider: { kind: "console", send: async () => {} }, keys: config.mfaEncryptionKeys });
   return { app, pool, users };
@@ -93,19 +94,24 @@ describeDb("JWT issuing (tokens) and JWKS", () => {
     }
   });
 
-  it("validateJwtKey rejects an invalid PEM", async () => {
-    await expect(validateJwtKey("not a pem")).rejects.toThrow();
+  it("signer.validateKey rejects an invalid PEM", async () => {
+    const signer = createJwtSigner({ ...makeTestConfig(), jwtPrivateKey: "not a pem" });
+    await expect(signer.validateKey()).rejects.toThrow();
   });
 
-  it("validateJwtKey resolves for a valid RSA key", async () => {
-    await expect(validateJwtKey(JWT_PRIVATE_KEY)).resolves.toBeUndefined();
+  it("signer.validateKey resolves for a valid RSA key", async () => {
+    const signer = createJwtSigner(makeTestConfig());
+    await expect(signer.validateKey()).resolves.toBeUndefined();
   });
 
-  it("makeJwtKey caches the parsed key across calls", async () => {
-    const config = makeTestConfig();
-    const first = await makeJwtKey(config);
-    const second = await makeJwtKey(config);
-    expect(first).toBe(second);
+  it("key failures are isolated per signer instance (no poisoned global cache)", async () => {
+    const bad = createJwtSigner({ ...makeTestConfig(), jwtPrivateKey: "not a pem" });
+    await expect(bad.validateKey()).rejects.toThrow();
+    // A fresh signer built from the same (fixed) config works — the failed
+    // import of the first instance must not leak into anyone else.
+    const good = createJwtSigner(makeTestConfig());
+    await expect(good.validateKey()).resolves.toBeUndefined();
+    await expect(bad.validateKey()).rejects.toThrow();
   });
 
   it("POST /api/v1/auth/tokens requires an authenticated session", async () => {
@@ -145,6 +151,11 @@ describeDb("JWT issuing (tokens) and JWKS", () => {
       expect(res.body.expiresIn).toBe(300);
 
       const publicKey = await importSPKI(JWT_PUBLIC_PEM, "RS256");
+      const header = decodeProtectedHeader(res.body.accessToken);
+      expect(header.alg).toBe("RS256");
+      expect(header.kid).toBe("test-key-1");
+      expect(header.typ).toBe("at+jwt");
+
       const { payload } = await jwtVerify(res.body.accessToken, publicKey, {
         issuer: ISSUER,
         audience: AUDIENCE,
@@ -153,6 +164,8 @@ describeDb("JWT issuing (tokens) and JWKS", () => {
       expect(payload.email).toBe("jwt-mint@example.com");
       expect(payload.email_verified).toBe(true);
       expect(payload.status).toBe("ACTIVE");
+      expect(typeof payload.jti).toBe("string");
+      expect(isUlid(payload.jti as string)).toBe(true);
     } finally {
       await pool.end();
     }
