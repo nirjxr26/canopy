@@ -51,7 +51,7 @@ async function makeKeyPair(): Promise<{ spki: string; pkcs8: string }> {
 
 async function signToken(pkcs8: string, claims: Record<string, unknown>): Promise<string> {
   return new jose.SignJWT(claims)
-    .setProtectedHeader({ alg: "RS256" })
+    .setProtectedHeader({ alg: "RS256", typ: "at+jwt" })
     .setIssuer(ISSUER)
     .setAudience(AUDIENCE)
     .setIssuedAt()
@@ -69,12 +69,29 @@ describe("verifyJwt", () => {
     await middleware(req, res, next);
     expect(res.statusCode).toBe(0);
     expect(next).toHaveBeenCalledTimes(1);
-    expect(req.auth).toEqual({
+    expect(req.platformAuth).toEqual({
       userId: "user-123",
       email: "user@example.com",
       emailVerified: true,
       status: "ACTIVE",
     });
+  });
+
+  it("rejects a token whose protected header lacks typ at+jwt", async () => {
+    const { spki, pkcs8 } = await makeKeyPair();
+    const token = await new jose.SignJWT(VALID_CLAIMS)
+      .setProtectedHeader({ alg: "RS256" })
+      .setIssuer(ISSUER)
+      .setAudience(AUDIENCE)
+      .setIssuedAt()
+      .setExpirationTime("2h")
+      .sign(await jose.importPKCS8(pkcs8, "RS256"));
+    const middleware = verifyJwt({ publicKey: spki, issuer: ISSUER, audience: AUDIENCE });
+    const { req, res, next } = mockExpress();
+    req.headers.authorization = `Bearer ${token}`;
+    await middleware(req, res, next);
+    expect(res.statusCode).toBe(401);
+    expect(next).not.toHaveBeenCalled();
   });
 
   it("rejects a token signed with a different key with a generic message and logs jose details", async () => {
@@ -118,7 +135,7 @@ describe("verifyJwt", () => {
     await middleware(req, res, next);
     expect(res.statusCode).toBe(401);
     expect(res.body).toEqual({ error: { code: "UNAUTHENTICATED", message: "Invalid access token" } });
-    expect(req.auth).toBeUndefined();
+    expect(req.platformAuth).toBeUndefined();
   });
 
   it("rejects a token with a non-boolean email_verified claim", async () => {
@@ -171,7 +188,7 @@ describe("requireSession", () => {
     await middleware(req, res, next);
     expect(res.statusCode).toBe(0);
     expect(next).toHaveBeenCalledTimes(1);
-    expect(req.auth).toEqual({
+    expect(req.platformAuth).toEqual({
       userId: "u1",
       email: "a@b.com",
       emailVerified: true,
@@ -202,8 +219,8 @@ describe("requireSession", () => {
     const { req, res, next } = mockExpress();
     req.headers.cookie = "__Host-ap_session=secret";
     await middleware(req, res, next);
-    expect(req.auth?.status).toBe("ACTIVE");
-    expect(req.auth?.emailVerified).toBe(false);
+    expect(req.platformAuth?.status).toBe("ACTIVE");
+    expect(req.platformAuth?.emailVerified).toBe(false);
   });
 
   it("throws synchronously for non-loopback http or non-http apiBaseUrl values", () => {
@@ -222,18 +239,14 @@ describe("requireSession", () => {
     expect(() => requireSession({ apiBaseUrl: "https://auth.example.com", serviceApiKey: "k" })).not.toThrow();
   });
 
-  it("aborts introspection when the request exceeds requestTimeoutMs", async () => {
+  it("maps introspection timeouts and platform 5xx to SERVICE_UNAVAILABLE (503), not 401", async () => {
     const fetchMock = vi.fn(async (_url: string, options?: RequestInit) => {
-      const signal = options?.signal;
-      expect(signal).toBeInstanceOf(AbortSignal);
-      const abortSignal = signal as AbortSignal;
+      const signal = options?.signal as AbortSignal;
       await new Promise<void>((resolve) => {
-        abortSignal.addEventListener("abort", () => resolve(), { once: true });
-        if (abortSignal.aborted) {
-          resolve();
-        }
+        signal.addEventListener("abort", () => resolve(), { once: true });
+        if (signal.aborted) resolve();
       });
-      throw abortSignal.reason;
+      throw signal.reason;
     });
     vi.stubGlobal("fetch", fetchMock);
     const middleware = requireSession({
@@ -241,13 +254,37 @@ describe("requireSession", () => {
       serviceApiKey: "k",
       requestTimeoutMs: 1,
     });
-    const { req, res, next } = mockExpress();
-    req.headers.cookie = "__Host-ap_session=secret";
-    await middleware(req, res, next);
-    expect(res.statusCode).toBe(0);
-    expect(next).toHaveBeenCalledTimes(1);
-    const err = next.mock.calls[0]?.[0] as Error | undefined;
-    expect(err?.name).toBe("TimeoutError");
-    expect(req.auth).toBeUndefined();
+
+    // timeout → 503
+    const a = mockExpress();
+    a.req.headers.cookie = "__Host-ap_session=secret";
+    await middleware(a.req, a.res, a.next);
+    expect(a.res.statusCode).toBe(503);
+    expect(a.next).not.toHaveBeenCalled();
+    expect(a.res.body).toEqual({
+      error: { code: "SERVICE_UNAVAILABLE", message: "Session validation unavailable" },
+    });
+
+    // platform 5xx → 503
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({ ok: false, status: 502 })),
+    );
+    const b = mockExpress();
+    b.req.headers.cookie = "__Host-ap_session=secret";
+    await middleware(b.req, b.res, b.next);
+    expect(b.res.statusCode).toBe(503);
+    expect(b.next).not.toHaveBeenCalled();
+
+    // platform 4xx stays a credential failure (401)
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({ ok: false, status: 401 })),
+    );
+    const c = mockExpress();
+    c.req.headers.cookie = "__Host-ap_session=secret";
+    await middleware(c.req, c.res, c.next);
+    expect(c.res.statusCode).toBe(401);
+    expect(c.res.body).toEqual({ error: { code: "UNAUTHENTICATED", message: "Invalid or expired session" } });
   });
 });

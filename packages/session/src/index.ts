@@ -16,7 +16,9 @@ export interface Logger {
 declare global {
   namespace Express {
     interface Request {
-      auth?: UserAuthContext;
+      // Deliberately distinct from other middlewares' req.auth so consumer apps
+      // importing multiple auth stacks never get silently merged types.
+      platformAuth?: UserAuthContext;
     }
   }
 }
@@ -33,7 +35,7 @@ const USER_STATUSES = new Set(["PENDING_VERIFICATION", "ACTIVE", "SUSPENDED", "L
 
 function isValidEmail(email: string): boolean {
   const at = email.indexOf("@");
-  if (at <= 0 || email.indexOf("@", at + 1) !== -1 || /\s/.test(email)) {
+  if (at <= 0 || email.includes("@", at + 1) || /\s/.test(email)) {
     return false;
   }
   const rest = email.slice(at + 1);
@@ -64,6 +66,73 @@ function validateApiBaseUrl(apiBaseUrl: string): void {
   throw new Error("apiBaseUrl must use https, or http only for loopback hosts");
 }
 
+function getSessionSecretFromCookie(cookieHeader: string | undefined, cookieName: string): string | undefined {
+  if (!cookieHeader) {
+    return undefined;
+  }
+
+  const cookies = cookieHeader.split(";").map((cookie) => cookie.trim());
+  for (const cookie of cookies) {
+    if (cookie.startsWith(`${cookieName}=`)) {
+      return cookie.substring(cookieName.length + 1);
+    }
+    if (cookie.startsWith("ap_session=")) {
+      return cookie.substring("ap_session=".length);
+    }
+  }
+
+  return undefined;
+}
+
+function writeSessionError(res: Response, status: number, code: string, message: string): void {
+  res.status(status).json({ error: { code, message } });
+}
+
+async function introspectSession(
+  options: RequireSessionOptions,
+  sessionSecret: string,
+  requestTimeoutMs: number,
+): Promise<
+  | {
+      valid: boolean;
+      userId?: string;
+      email?: string;
+      emailVerified?: boolean;
+      status?: string;
+      expiresAt?: string;
+    }
+  | undefined
+> {
+  const response = await fetch(`${options.apiBaseUrl}/api/v1/auth/introspect`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Service-Key": options.serviceApiKey,
+    },
+    body: JSON.stringify({ sessionSecret }),
+    signal: AbortSignal.timeout(requestTimeoutMs),
+  });
+
+  if (!response.ok) {
+    // Upstream outage (5xx): signal "unavailable" — the caller answers 503.
+    if (response.status >= 500) {
+      return undefined;
+    }
+    // Any upstream 4xx (e.g. our service key rejected) is a definitive
+    // "not authenticated" answer, not an outage — surface as invalid session.
+    return { valid: false };
+  }
+
+  return (await response.json()) as {
+    valid: boolean;
+    userId?: string;
+    email?: string;
+    emailVerified?: boolean;
+    status?: string;
+    expiresAt?: string;
+  };
+}
+
 /** Express middleware for consumer backends using session cookie introspection */
 export function requireSession(options: RequireSessionOptions) {
   validateApiBaseUrl(options.apiBaseUrl);
@@ -72,57 +141,34 @@ export function requireSession(options: RequireSessionOptions) {
 
   return async function sessionMiddleware(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-      const cookieHeader = req.headers.cookie;
-      let sessionSecret: string | undefined;
-
-      if (cookieHeader) {
-        const cookies = cookieHeader.split(";").map((c) => c.trim());
-        for (const cookie of cookies) {
-          if (cookie.startsWith(`${cookieName}=`)) {
-            sessionSecret = cookie.substring(cookieName.length + 1);
-            break;
-          }
-          if (cookie.startsWith("ap_session=")) {
-            sessionSecret = cookie.substring("ap_session=".length);
-          }
-        }
-      }
+      const sessionSecret = getSessionSecretFromCookie(req.headers.cookie, cookieName);
 
       if (!sessionSecret) {
-        res.status(401).json({ error: { code: "UNAUTHENTICATED", message: "Missing session cookie" } });
+        writeSessionError(res, 401, "UNAUTHENTICATED", "Missing session cookie");
         return;
       }
 
-      const response = await fetch(`${options.apiBaseUrl}/api/v1/auth/introspect`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Service-Key": options.serviceApiKey,
-        },
-        body: JSON.stringify({ sessionSecret }),
-        signal: AbortSignal.timeout(requestTimeoutMs),
-      });
-
-      if (!response.ok) {
-        res.status(401).json({ error: { code: "UNAUTHENTICATED", message: "Session validation failed" } });
+      let data: Awaited<ReturnType<typeof introspectSession>>;
+      try {
+        data = await introspectSession(options, sessionSecret, requestTimeoutMs);
+      } catch {
+        // Timeout / network failure: the auth platform is unreachable — that is
+        // not the same fact as "this session is invalid". Fail closed as 503.
+        writeSessionError(res, 503, "SERVICE_UNAVAILABLE", "Session validation unavailable");
         return;
       }
 
-      const data = (await response.json()) as {
-        valid: boolean;
-        userId?: string;
-        email?: string;
-        emailVerified?: boolean;
-        status?: string;
-        expiresAt?: string;
-      };
+      if (data === undefined) {
+        writeSessionError(res, 503, "SERVICE_UNAVAILABLE", "Session validation unavailable");
+        return;
+      }
 
       if (!data.valid || !data.userId || !data.email) {
-        res.status(401).json({ error: { code: "UNAUTHENTICATED", message: "Invalid or expired session" } });
+        writeSessionError(res, 401, "UNAUTHENTICATED", "Invalid or expired session");
         return;
       }
 
-      req.auth = {
+      req.platformAuth = {
         userId: data.userId,
         email: data.email,
         emailVerified: data.emailVerified ?? false,
@@ -190,6 +236,17 @@ function describeError(err: unknown): unknown {
   return info;
 }
 
+const remoteJWKSByURL = new Map<string, ReturnType<typeof jose.createRemoteJWKSet>>();
+
+function getRemoteJWKS(jwksUrl: string): ReturnType<typeof jose.createRemoteJWKSet> {
+  let jwks = remoteJWKSByURL.get(jwksUrl);
+  if (jwks === undefined) {
+    jwks = jose.createRemoteJWKSet(new URL(jwksUrl));
+    remoteJWKSByURL.set(jwksUrl, jwks);
+  }
+  return jwks;
+}
+
 /** Express middleware for consumer backends validating RS256 Bearer JWTs */
 export function verifyJwt(options: VerifyJwtOptions) {
   const tolerance = options.clockToleranceSeconds ?? 60;
@@ -205,32 +262,37 @@ export function verifyJwt(options: VerifyJwtOptions) {
 
       const token = authHeader.substring(7).trim();
       let payload: jose.JWTPayload;
+      let protectedHeader: jose.ProtectedHeaderParameters;
+
+      const verifyOptions = {
+        issuer: options.issuer,
+        audience: options.audience,
+        clockTolerance: tolerance,
+      } as const;
 
       if (options.publicKey) {
         const publicKey = await jose.importSPKI(options.publicKey, "RS256");
-        const result = await jose.jwtVerify(token, publicKey, {
-          issuer: options.issuer,
-          audience: options.audience,
-          clockTolerance: tolerance,
-        });
+        const result = await jose.jwtVerify(token, publicKey, verifyOptions);
         payload = result.payload;
+        protectedHeader = result.protectedHeader;
       } else if (options.jwksUrl) {
-        const JWKS = jose.createRemoteJWKSet(new URL(options.jwksUrl));
-        const result = await jose.jwtVerify(token, JWKS, {
-          issuer: options.issuer,
-          audience: options.audience,
-          clockTolerance: tolerance,
-        });
+        const result = await jose.jwtVerify(token, getRemoteJWKS(options.jwksUrl), verifyOptions);
         payload = result.payload;
+        protectedHeader = result.protectedHeader;
       } else {
         throw new Error("verifyJwt requires either publicKey or jwksUrl");
+      }
+
+      // §8.2: reject missing/typ-mismatched tokens — our mint side emits "at+jwt".
+      if (protectedHeader.typ !== "at+jwt") {
+        throw new Error("Invalid token typ");
       }
 
       if (!isValidClaims(payload)) {
         throw new Error("Invalid token claims");
       }
 
-      req.auth = {
+      req.platformAuth = {
         userId: payload.sub,
         email: payload.email,
         emailVerified: payload.email_verified,
