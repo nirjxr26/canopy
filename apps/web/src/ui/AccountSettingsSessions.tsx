@@ -51,7 +51,9 @@ export function AccountSettingsSessions() {
     setRevokeAllError(null);
     try {
       await sessionsApi.revokeAll();
-      await loadSessions();
+      // The current session was just revoked — refetching would 401 and flash a
+      // bogus error. Clear the list locally; refresh() redirects to login.
+      setSessions([]);
       await refresh();
     } catch (err) {
       setRevokeAllError(messageFrom(err));

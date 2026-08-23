@@ -29,7 +29,7 @@ export function VerifyEmailPage() {
   }, [token, run]);
 
   return (
-    <AuthShell footer="Auuth keeps the link single-use — once used it can't be reused.">
+    <AuthShell footer="CanopY keeps the link single-use — once used it can't be reused.">
       <Card title="Email verification" subtitle="Confirming your email address...">
         {state === "checking" ? (
           <div className="flex flex-col items-center justify-center gap-3 my-6">

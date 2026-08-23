@@ -12,15 +12,17 @@ import { TextField } from "./TextField";
 const STATUS_STYLES: Record<string, { label: string; color: string }> = {
   ACTIVE: { label: "Active", color: "#22C55E" },
   PENDING_VERIFICATION: { label: "Pending verification", color: "#F59E0B" },
+  SUSPENDED: { label: "Suspended", color: "#F97316" },
   LOCKED: { label: "Locked", color: "#EF4444" },
-  DISABLED: { label: "Disabled", color: "#A1A1AA" },
+  DEACTIVATED: { label: "Deactivated", color: "#A1A1AA" },
 };
 
 export function AccountSettingsProfile() {
   const { user, refresh } = useAuth();
   const profileSubmit = useSubmit();
   const [editing, setEditing] = useState(false);
-  const [fullName, setFullName] = useState("");
+  const [firstNameInput, setFirstNameInput] = useState("");
+  const [lastNameInput, setLastNameInput] = useState("");
 
   if (user === null) {
     return null;
@@ -31,7 +33,9 @@ export function AccountSettingsProfile() {
   function onSave(event: SubmitEvent<HTMLFormElement>) {
     event.preventDefault();
     void profileSubmit.run(async () => {
-      await authApi.updateProfile({ firstName: fullName.trim() || undefined });
+      // Send both fields so edits preserve the sibling name instead of
+      // overwriting firstName with a concatenated full name.
+      await authApi.updateProfile({ firstName: firstNameInput.trim(), lastName: lastNameInput.trim() });
       await refresh();
       setEditing(false);
     });
@@ -60,11 +64,18 @@ export function AccountSettingsProfile() {
           <div className="py-4 px-1 -mx-1">
             <form onSubmit={onSave} noValidate className="flex flex-col gap-0">
               <TextField
-                label="Full name"
-                autoComplete="name"
-                placeholder="Jane Doe"
-                value={fullName}
-                onChange={(e) => setFullName(e.target.value)}
+                label="First name"
+                autoComplete="given-name"
+                placeholder="Jane"
+                value={firstNameInput}
+                onChange={(e) => setFirstNameInput(e.target.value)}
+              />
+              <TextField
+                label="Last name"
+                autoComplete="family-name"
+                placeholder="Doe"
+                value={lastNameInput}
+                onChange={(e) => setLastNameInput(e.target.value)}
               />
               {profileSubmit.error ? <Alert tone="error">{profileSubmit.error}</Alert> : null}
               <div className="flex items-center gap-2">
@@ -75,7 +86,8 @@ export function AccountSettingsProfile() {
                   variant="ghost"
                   onClick={() => {
                     setEditing(false);
-                    setFullName(name ?? "");
+                    setFirstNameInput(user.firstName ?? "");
+                    setLastNameInput(user.lastName ?? "");
                   }}
                 >
                   Cancel
@@ -94,7 +106,8 @@ export function AccountSettingsProfile() {
           }
           action="Edit"
           onClick={() => {
-            setFullName(name ?? "");
+            setFirstNameInput(user.firstName ?? "");
+            setLastNameInput(user.lastName ?? "");
             setEditing(true);
           }}
         />

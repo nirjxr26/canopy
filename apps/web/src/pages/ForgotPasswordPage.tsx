@@ -12,7 +12,6 @@ export function ForgotPasswordPage() {
   const [email, setEmail] = useState("");
   const [emailError, setEmailError] = useState<string | null>(null);
   const [done, setDone] = useState(false);
-  const [devLink, setDevLink] = useState<string | null>(null);
 
   function onSubmit(event: SubmitEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -22,8 +21,7 @@ export function ForgotPasswordPage() {
     }
     setEmailError(null);
     void run(async () => {
-      const result = await authApi.forgotPassword(email);
-      setDevLink(result.devEmailLink ?? null);
+      await authApi.forgotPassword(email);
       setDone(true);
     });
   }
@@ -36,12 +34,6 @@ export function ForgotPasswordPage() {
             If <strong>{email}</strong> is registered, we've sent a password reset link to it. It
             expires in 30 minutes.
           </Alert>
-          {devLink !== null ? (
-            <Alert tone="info">
-              Dev mode: reset emails aren't really sent, so here's your link —{" "}
-              <a href={devLink}>{devLink}</a>
-            </Alert>
-          ) : null}
           <div className="flex gap-2.5 mt-2">
             <Link to="/login">
               <Button variant="ghost">Back to sign in</Button>

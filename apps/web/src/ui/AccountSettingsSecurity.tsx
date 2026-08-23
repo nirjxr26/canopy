@@ -1,4 +1,4 @@
-import { type ReactNode, type SubmitEvent, useState } from "react";
+import { type ReactNode, type SubmitEvent, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../lib/auth";
 import { assertPasswordValid, authApi, mfaApi } from "../lib/api";
@@ -28,6 +28,21 @@ export function AccountSettingsSecurity() {
   const [fieldError, setFieldError] = useState<string | null>(null);
   const [recoveryCodes, setRecoveryCodes] = useState<string[] | null>(null);
   const [copied, setCopied] = useState(false);
+  // Clear copy-feedback timer on unmount (L-85).
+  const copyTimer = useRef<number | undefined>(undefined);
+  useEffect(() => () => {
+    if (copyTimer.current !== undefined) window.clearTimeout(copyTimer.current);
+  }, []);
+
+  // Shared transient inputs must not bleed between sub-views.
+  function switchView(next: View) {
+    setPassword("");
+    setNewPassword("");
+    setConfirmPassword("");
+    setCode("");
+    setFieldError(null);
+    setView(next);
+  }
 
   if (user === null) {
     return null;
@@ -58,7 +73,7 @@ export function AccountSettingsSecurity() {
       setPassword("");
       setNewPassword("");
       setConfirmPassword("");
-      setView("list");
+      switchView("list");
       setChanged(true);
       await refresh();
     });
@@ -75,7 +90,7 @@ export function AccountSettingsSecurity() {
       await mfaApi.disable({ currentPassword: password, code: code.trim() });
       setPassword("");
       setCode("");
-      setView("list");
+      switchView("list");
       await refresh();
     });
   }
@@ -98,13 +113,14 @@ export function AccountSettingsSecurity() {
     if (recoveryCodes !== null) {
       void navigator.clipboard.writeText(recoveryCodes.join("\n"));
       setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      if (copyTimer.current !== undefined) window.clearTimeout(copyTimer.current);
+      copyTimer.current = window.setTimeout(() => setCopied(false), 2000);
     }
   }
 
   const onManageMfa = () => {
     if (user.mfaEnabled) {
-      setView("2fa");
+      switchView("2fa");
     } else {
       navigate("/mfa/setup");
     }
@@ -123,7 +139,7 @@ export function AccountSettingsSecurity() {
         onConfirmPassword={setConfirmPassword}
         onSubmit={onChangePassword}
         onForgot={() => navigate("/forgot-password")}
-        onBack={() => setView("list")}
+        onBack={() => switchView("list")}
       />
     );
   }
@@ -138,7 +154,7 @@ export function AccountSettingsSecurity() {
         onPassword={setPassword}
         onCode={setCode}
         onSubmit={onDisable}
-        onBack={() => setView("list")}
+        onBack={() => switchView("list")}
       />
     );
   }
@@ -154,7 +170,7 @@ export function AccountSettingsSecurity() {
         recoveryCodes={recoveryCodes}
         copied={copied}
         onCopy={copyCodes}
-        onBack={() => setView("list")}
+        onBack={() => switchView("list")}
       />
     );
   }
@@ -166,9 +182,9 @@ export function AccountSettingsSecurity() {
       resendSent={resendSent}
       changed={changed}
       onResend={onResend}
-      onOpenPassword={() => setView("password")}
+      onOpenPassword={() => switchView("password")}
       onManageMfa={onManageMfa}
-      onOpenCodes={() => setView("codes")}
+      onOpenCodes={() => switchView("codes")}
     />
   );
 }
@@ -201,7 +217,7 @@ function ChangePasswordView({
   return (
     <DetailView
       title="Change password"
-      description="Use at least 12 characters with uppercase, lowercase, number, and special character."
+      description="Use at least 12 characters. Longer is stronger — avoid passwords you've used elsewhere."
       onBack={onBack}
     >
       {submit.error ? <Alert tone="error">{submit.error}</Alert> : null}

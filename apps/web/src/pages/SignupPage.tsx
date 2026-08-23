@@ -15,12 +15,12 @@ export function SignupPage() {
   const navigate = useNavigate();
   const { pending, error, run } = useSubmit();
   const [email, setEmail] = useState("");
-  const [fullName, setFullName] = useState("");
+  const [firstName, setFirstName] = useState("");
+  const [lastName, setLastName] = useState("");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [fieldErrors, setFieldErrors] = useState<{ email?: string; password?: string; confirm?: string }>({});
   const [done, setDone] = useState(false);
-  const [devLink, setDevLink] = useState<string | null>(null);
 
   if (user !== null) {
     return <Navigate to="/" replace />;
@@ -33,12 +33,6 @@ export function SignupPage() {
           <Alert tone="success">
             A verification link has been sent to <strong>{email}</strong>. It expires in 24 hours.
           </Alert>
-          {devLink !== null ? (
-            <Alert tone="info">
-              Dev mode: verification emails aren't really sent, so here's your link —{" "}
-              <a href={devLink}>{devLink}</a>
-            </Alert>
-          ) : null}
           <div className="inline-form__actions">
             <Button variant="ghost" onClick={() => navigate("/login")}>
               Back to sign in
@@ -63,8 +57,12 @@ export function SignupPage() {
     event.preventDefault();
     if (!validate()) return;
     void run(async () => {
-      const result = await signup({ email, password, firstName: fullName.trim() || undefined });
-      setDevLink(result.devEmailLink ?? null);
+      await signup({
+        email,
+        password,
+        firstName: firstName.trim() || undefined,
+        lastName: lastName.trim() || undefined,
+      });
       setDone(true);
     });
   }
@@ -75,11 +73,18 @@ export function SignupPage() {
         {error ? <Alert tone="error">{error}</Alert> : null}
         <form onSubmit={onSubmit} noValidate>
           <TextField
-            label="Full name"
-            autoComplete="name"
-            placeholder="Jane Doe"
-            value={fullName}
-            onChange={(e) => setFullName(e.target.value)}
+            label="First name"
+            autoComplete="given-name"
+            placeholder="Jane"
+            value={firstName}
+            onChange={(e) => setFirstName(e.target.value)}
+          />
+          <TextField
+            label="Last name"
+            autoComplete="family-name"
+            placeholder="Doe"
+            value={lastName}
+            onChange={(e) => setLastName(e.target.value)}
           />
           <TextField
             label="Email"

@@ -1,7 +1,7 @@
-import { type SubmitEvent, useEffect, useState } from "react";
+import { type SubmitEvent, useState } from "react";
 import { Link, Navigate, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../lib/auth";
-import { ApiError, authApi, isEmail } from "../lib/api";
+import { authApi, isEmail } from "../lib/api";
 import { useSubmit } from "../lib/submit";
 import { Alert } from "../ui/Alert";
 import { Button } from "../ui/Button";
@@ -20,29 +20,14 @@ export function LoginPage() {
   const [keepSignedIn, setKeepSignedIn] = useState(true);
   const [fieldErrors, setFieldErrors] = useState<{ email?: string; password?: string }>({});
   const [resendMessage, setResendMessage] = useState<{ tone: "success" | "info"; text: string; link?: string } | null>(null);
-  const [unverified, setUnverified] = useState(false);
-
-  useEffect(() => {
-    if (unverified) {
-      sendVerification();
-    }
-  }, [unverified]);
 
   function sendVerification() {
     void resend.run(async () => {
-      const result = await authApi.resendVerification(email);
-      if (result.devEmailLink !== undefined) {
-        setResendMessage({
-          tone: "success",
-          text: "A fresh verification link is ready — ",
-          link: result.devEmailLink,
-        });
-      } else {
-        setResendMessage({
-          tone: "info",
-          text: "If this account exists and isn't verified yet, a new verification email is on its way.",
-        });
-      }
+      await authApi.resendVerification(email);
+      setResendMessage({
+        tone: "info",
+        text: "If this account exists and isn't verified yet, a new verification email is on its way.",
+      });
     });
   }
 
@@ -62,15 +47,10 @@ export function LoginPage() {
     event.preventDefault();
     if (!validate()) return;
     void run(async () => {
-      try {
-        const result = await login(email, password, keepSignedIn);
-        if ("mfaRequired" in result) {
-          const from = (location.state as { from?: string } | null)?.from ?? "/";
-          navigate("/mfa", { state: { from, mfaToken: result.mfaToken } });
-        }
-      } catch (err) {
-        setUnverified(err instanceof ApiError && err.code === "EMAIL_NOT_VERIFIED");
-        throw err;
+      const result = await login(email, password, keepSignedIn);
+      if ("mfaRequired" in result) {
+        const from = (location.state as { from?: string } | null)?.from ?? "/";
+        navigate("/mfa", { state: { from, mfaToken: result.mfaToken } });
       }
     });
   }
@@ -80,15 +60,7 @@ export function LoginPage() {
       <Card title="Welcome back" subtitle="Sign in to your account to continue.">
         {error ? <Alert tone="error">{error}</Alert> : null}
         {resendMessage !== null ? (
-          <Alert tone={resendMessage.tone}>
-            {resendMessage.text}
-            {resendMessage.link !== undefined ? (
-              <>
-                {" "}
-                <a href={resendMessage.link}>{resendMessage.link}</a>
-              </>
-            ) : null}
-          </Alert>
+          <Alert tone={resendMessage.tone}>{resendMessage.text}</Alert>
         ) : null}
         <form onSubmit={onSubmit} noValidate>
           <TextField
@@ -118,7 +90,7 @@ export function LoginPage() {
               />
               <span>Remember me</span>
             </label>
-            <Link to="/forgot-password" className="hover:text-text md-5">
+            <Link to="/forgot-password" className="hover:text-text">
               Forgot password?
             </Link>
           </div>
@@ -132,13 +104,13 @@ export function LoginPage() {
             <Link to="/signup">Sign up</Link>
           </span>
         </div>
-        {error !== null ? (
-          <div className="flex items-center justify-center gap-2 mt-4 text-text-muted text-[13.5px]">
-            <Button variant="ghost" loading={resend.pending} onClick={sendVerification}>
-              Email not verified? Resend the link
-            </Button>
-          </div>
-        ) : null}
+        {/* Always available: the endpoint is enumeration-safe and rate-limited,
+            so the error never needs to reveal account state (C-3). */}
+        <div className="flex items-center justify-center gap-2 mt-3">
+          <Button variant="ghost" loading={resend.pending} onClick={sendVerification}>
+            Resend verification email
+          </Button>
+        </div>
       </Card>
     </AuthShell>
   );

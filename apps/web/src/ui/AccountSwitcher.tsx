@@ -74,6 +74,12 @@ export function AccountSwitcher() {
         <span className="text-xs font-medium text-left">Sign out</span>
       </button>
 
+      {logoutSubmit.error !== null ? (
+        <p role="alert" className="mt-1 px-2 text-xs text-danger">
+          {logoutSubmit.error}
+        </p>
+      ) : null}
+
       <AccountSettingsPopup open={settingsOpen} onClose={() => setSettingsOpen(false)} />
     </div>
   );

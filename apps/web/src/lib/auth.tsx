@@ -7,7 +7,7 @@ interface AuthContextValue {
   login(email: string, password: string, persistent?: boolean): Promise<{ user: User } | { mfaRequired: true; mfaToken: string }>;
   signup(
     input: { email: string; password: string; firstName?: string; lastName?: string },
-  ): Promise<{ user: User; devEmailLink?: string }>;
+  ): Promise<{ message: string }>;
   logout(): Promise<void>;
   refresh(): Promise<User | null>;
   setUser(user: User | null): void;

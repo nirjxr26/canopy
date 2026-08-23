@@ -9,7 +9,6 @@ interface PasswordFieldProps extends InputHTMLAttributes<HTMLInputElement> {
 export function PasswordField({ label, error, hint, id, className, ...rest }: Readonly<PasswordFieldProps>) {
   const autoId = useId();
   const inputId = id ?? autoId;
-  const toggleId = useId();
   const [visible, setVisible] = useState(false);
   
   const baseInputClasses = "w-full pl-3 pr-10 py-2.5 bg-bg-elevated border border-border rounded-md text-text text-sm placeholder:text-text-faint outline-none transition";
@@ -30,7 +29,6 @@ export function PasswordField({ label, error, hint, id, className, ...rest }: Re
           {...rest}
         />
         <button
-          id={toggleId}
           type="button"
           className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 flex items-center justify-center bg-transparent border-0 rounded-md text-text-faint cursor-pointer focus:outline-none shrink-0"
           aria-label={visible ? "Hide password" : "Show password"}

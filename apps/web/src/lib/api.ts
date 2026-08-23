@@ -4,7 +4,7 @@ export interface User {
   firstName: string | null;
   lastName: string | null;
   emailVerified: boolean;
-  status: "PENDING_VERIFICATION" | "ACTIVE" | "LOCKED" | "DISABLED";
+  status: "PENDING_VERIFICATION" | "ACTIVE" | "SUSPENDED" | "LOCKED" | "DEACTIVATED";
   mfaEnabled: boolean;
   lastLoginAt: string | null;
 }
@@ -39,6 +39,7 @@ export interface PasswordRequirement {
   met: boolean;
 }
 
+/** §6.5: length-only server policy; client mirrors for UX, server is the validator. */
 export function getPasswordRequirements(password: string): PasswordRequirement[] {
   return [
     {
@@ -49,10 +50,6 @@ export function getPasswordRequirements(password: string): PasswordRequirement[]
       label: `No more than ${PASSWORD_MAX_LENGTH} characters`,
       met: password.length <= PASSWORD_MAX_LENGTH,
     },
-    { label: "Contains an uppercase letter", met: /[A-Z]/.test(password) },
-    { label: "Contains a lowercase letter", met: /[a-z]/.test(password) },
-    { label: "Contains a number", met: /\d/.test(password) },
-    { label: "Contains a special character", met: /[^A-Za-z0-9]/.test(password) },
   ];
 }
 
@@ -73,13 +70,15 @@ export function isEmail(value: string): boolean {
 interface RequestOptions {
   method?: string;
   body?: unknown;
+  signal?: AbortSignal;
 }
 
 export async function api<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const res = await fetch(path, {
     method: options.method ?? "GET",
     headers: options.body === undefined ? undefined : { "Content-Type": "application/json" },
-    credentials: "same-origin",
+    credentials: "include",
+    signal: options.signal ?? AbortSignal.timeout(15_000),
     body: options.body === undefined ? undefined : JSON.stringify(options.body),
   });
 
@@ -106,7 +105,7 @@ export async function api<T>(path: string, options: RequestOptions = {}): Promis
 
 export const authApi = {
   signup(input: { email: string; password: string; firstName?: string; lastName?: string }) {
-    return api<{ user: User; devEmailLink?: string }>("/api/v1/auth/signup", {
+    return api<{ message: string }>("/api/v1/auth/signup", {
       method: "POST",
       body: input,
     });
@@ -130,13 +129,13 @@ export const authApi = {
     return api<{ user: User }>("/api/v1/auth/verify-email", { method: "POST", body: { token } });
   },
   resendVerification(email: string) {
-    return api<{ devEmailLink?: string }>("/api/v1/auth/resend-verification", {
+    return api<Record<string, never>>("/api/v1/auth/resend-verification", {
       method: "POST",
       body: { email },
     });
   },
   forgotPassword(email: string) {
-    return api<{ devEmailLink?: string }>("/api/v1/auth/forgot-password", {
+    return api<Record<string, never>>("/api/v1/auth/forgot-password", {
       method: "POST",
       body: { email },
     });
@@ -179,9 +178,9 @@ export const sessionsApi = {
 
 export const mfaApi = {
   enroll() {
-    return api<{ challenge: string; secret: string; otpauthUrl: string }>("/api/v1/auth/enroll", { method: "POST" });
+    return api<{ secret: string; otpauthUrl: string }>("/api/v1/auth/enroll", { method: "POST" });
   },
-  confirm(input: { challenge: string; code: string }) {
+  confirm(input: { code: string }) {
     return api<{ recoveryCodes: string[] }>("/api/v1/auth/confirm", { method: "POST", body: input });
   },
   verify(input: { mfaToken: string; code: string }) {

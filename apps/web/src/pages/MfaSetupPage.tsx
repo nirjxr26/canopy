@@ -32,7 +32,6 @@ export function MfaSetupPage() {
   const { error: enrollError, run: enrollRun } = useSubmit();
   const { pending: confirming, error: confirmError, run: confirmRun } = useSubmit();
   const [step, setStep] = useState<Step>("enroll");
-  const [challenge, setChallenge] = useState<string | null>(null);
   const [secret, setSecret] = useState<string | null>(null);
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
   const [code, setCode] = useState("");
@@ -45,7 +44,6 @@ export function MfaSetupPage() {
   async function doEnroll() {
     try {
       const result = await mfaApi.enroll();
-      setChallenge(result.challenge);
       setSecret(result.secret);
       const dataUrl = await QRCode.toDataURL(result.otpauthUrl, {
         width: 220,
@@ -65,11 +63,15 @@ export function MfaSetupPage() {
     void enrollRun(doEnroll);
   }, [enrollRun]);
 
+  // Clear copy-feedback timers on unmount (L-85).
+  const timers = useRef<number[]>([]);
+  useEffect(() => () => timers.current.forEach((id) => clearTimeout(id)), []);
+
   function copySecret() {
     if (secret !== null) {
       void navigator.clipboard.writeText(secret);
       setCopiedSecret(true);
-      setTimeout(() => setCopiedSecret(false), 2000);
+      timers.current.push(window.setTimeout(() => setCopiedSecret(false), 2000));
     }
   }
 
@@ -77,20 +79,20 @@ export function MfaSetupPage() {
     if (recoveryCodes !== null) {
       void navigator.clipboard.writeText(recoveryCodes.join("\n"));
       setCopiedCodes(true);
-      setTimeout(() => setCopiedCodes(false), 2000);
+      timers.current.push(window.setTimeout(() => setCopiedCodes(false), 2000));
     }
   }
 
   function onConfirm(event: SubmitEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (challenge === null || code.trim() === "") {
+    if (code.trim() === "") {
       setFieldError("Enter the 6-digit code");
       return;
     }
     setFieldError(null);
     void confirmRun(async () => {
       try {
-        const result = await mfaApi.confirm({ challenge, code: code.trim() });
+        const result = await mfaApi.confirm({ code: code.trim() });
         setRecoveryCodes(result.recoveryCodes);
         setStep("codes");
         await refresh();

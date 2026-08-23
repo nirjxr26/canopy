@@ -3,7 +3,8 @@ import { ApiError } from "./api";
 
 export function messageFrom(error: unknown): string {
   if (error instanceof ApiError) {
-    return error.message;
+    // Surface the correlation id so users/support can match failures to server logs (plan §9).
+    return error.requestId !== "" ? `${error.message} (Ref: ${error.requestId})` : error.message;
   }
   if (error instanceof Error) {
     return error.message;
