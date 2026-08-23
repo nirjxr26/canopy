@@ -6,12 +6,16 @@ const BASE_TEST_URL =
 
 // M-41: every vitest worker gets its OWN physical database so integration
 // files can run in parallel without nuking each other's schema.
-const urlMatch = BASE_TEST_URL.match(/^(postgres(?:ql)?:\/\/[^/?]+\/)([^/?]+)(\?.*)?$/);
-if (!urlMatch || !urlMatch[2]!.endsWith("_test")) {
+const TEST_URL_PATTERN = /^(postgres(?:ql)?:\/\/[^/?]+\/)([^/?]+)(\?.*)?$/;
+const urlMatch = TEST_URL_PATTERN.exec(BASE_TEST_URL);
+const adminBase = urlMatch?.[1];
+const baseDbName = urlMatch?.[2];
+const urlSearch = urlMatch?.[3] ?? "";
+if (!adminBase || !baseDbName?.endsWith("_test")) {
   throw new Error(`TEST_DATABASE_URL must point at a *_test database, got "${BASE_TEST_URL}"`);
 }
 const workerId = process.env.VITEST_POOL_ID ?? process.env.VITEST_WORKER_ID ?? "0";
-export const TEST_DATABASE_URL = `${urlMatch[1]}${urlMatch[2]}_w${workerId}${urlMatch[3] ?? ""}`;
+export const TEST_DATABASE_URL = `${adminBase}${baseDbName}_w${workerId}${urlSearch}`;
 
 export const TEST_MFA_KEY = "v1:MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=";
 
@@ -20,8 +24,12 @@ export const TEST_MFA_KEY = "v1:MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=";
 const STRICT = process.env.VITEST_STRICT === "1";
 
 async function ensureWorkerDatabase(): Promise<void> {
-  const adminUrl = `${urlMatch[1]}postgres`;
-  const dbName = TEST_DATABASE_URL.match(/\/\/[^/]+\/([^?]+)/)![1]!;
+  const adminUrl = `${adminBase}postgres`;
+  const dbNameMatch = /\/\/[^/]+\/([^?]+)/.exec(TEST_DATABASE_URL);
+  const dbName = dbNameMatch?.[1];
+  if (!dbName) {
+    throw new Error("cannot derive worker database name from TEST_DATABASE_URL");
+  }
   const pool = new pg.Pool({ connectionString: adminUrl, connectionTimeoutMillis: 3000, max: 1 });
   try {
     const exists = await pool.query("select 1 from pg_database where datname = $1", [dbName]);
@@ -77,10 +85,20 @@ export async function resetTestDatabase(url: string = TEST_DATABASE_URL): Promis
 
 export const dbAvailable = await probeDatabase();
 
-function describeDbOrThrow(): typeof describe {
+const describeDbOrThrow = ((..._args: Parameters<typeof describe>): ReturnType<typeof describe> => {
   throw new Error(
     "Postgres unavailable but VITEST_STRICT=1 — refusing to silently skip DB-dependent suites",
   );
+}) as unknown as typeof describe;
+
+let describeFn: typeof describe = describe;
+if (!dbAvailable) {
+  if (STRICT) {
+    describeFn = describeDbOrThrow;
+  } else {
+    // Local convenience only — CI runs with VITEST_STRICT=1 (S1607 handled above).
+    describeFn = describe.skip as unknown as typeof describe;
+  }
 }
 
-export const describeDb = (dbAvailable ? describe : STRICT ? (describeDbOrThrow as unknown as typeof describe) : describe.skip) as typeof describe;
+export const describeDb = describeFn;

@@ -37,7 +37,9 @@ jobs:
         with:
           node-version: 24
           cache: npm
-      - run: npm ci
+      - run: npm ci --ignore-scripts
+      - name: Rebuild allowed native modules
+        run: npm rebuild argon2
       - run: npm run lint
       - run: npm run typecheck
       - run: npm test
