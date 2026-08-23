@@ -1,4 +1,4 @@
-import { type FormEvent, useState } from "react";
+import { type SubmitEvent, useState } from "react";
 import { Link, Navigate, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../lib/auth";
 import { authApi, isEmail } from "../lib/api";
@@ -6,6 +6,7 @@ import { useSubmit } from "../lib/submit";
 import { Alert } from "../ui/Alert";
 import { Button } from "../ui/Button";
 import { AuthShell, Card } from "../ui/Layout";
+import { PasswordField } from "../ui/PasswordField";
 import { TextField } from "../ui/TextField";
 
 export function LoginPage() {
@@ -16,8 +17,19 @@ export function LoginPage() {
   const resend = useSubmit();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [keepSignedIn, setKeepSignedIn] = useState(true);
   const [fieldErrors, setFieldErrors] = useState<{ email?: string; password?: string }>({});
   const [resendMessage, setResendMessage] = useState<{ tone: "success" | "info"; text: string; link?: string } | null>(null);
+
+  function sendVerification() {
+    void resend.run(async () => {
+      await authApi.resendVerification(email);
+      setResendMessage({
+        tone: "info",
+        text: "If this account exists and isn't verified yet, a new verification email is on its way.",
+      });
+    });
+  }
 
   if (user !== null) {
     return <Navigate to="/" replace />;
@@ -31,46 +43,24 @@ export function LoginPage() {
     return Object.keys(next).length === 0;
   }
 
-  function onSubmit(event: FormEvent) {
+  function onSubmit(event: SubmitEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!validate()) return;
     void run(async () => {
-      const result = await login(email, password);
+      const result = await login(email, password, keepSignedIn);
       if ("mfaRequired" in result) {
         const from = (location.state as { from?: string } | null)?.from ?? "/";
-        sessionStorage.setItem("auuth.mfaToken", result.mfaToken);
-        navigate("/mfa", { state: { from } });
-      }
-    });
-  }
-
-  function onResend() {
-    void resend.run(async () => {
-      const result = await authApi.resendVerification(email);
-      if (result.devEmailLink !== undefined) {
-        setResendMessage({
-          tone: "success",
-          text: "A fresh verification link is ready — ",
-          link: result.devEmailLink,
-        });
-      } else {
-        setResendMessage({
-          tone: "info",
-          text: "If this account exists and isn't verified yet, a new verification email is on its way.",
-        });
+        navigate("/mfa", { state: { from, mfaToken: result.mfaToken } });
       }
     });
   }
 
   return (
-    <AuthShell footer="Protected by auuth — sessions, rate limits and audit events included.">
+    <AuthShell>
       <Card title="Welcome back" subtitle="Sign in to your account to continue.">
         {error ? <Alert tone="error">{error}</Alert> : null}
         {resendMessage !== null ? (
-          <Alert tone={resendMessage.tone}>
-            {resendMessage.text}
-            {resendMessage.link !== undefined ? <a href={resendMessage.link}>{resendMessage.link}</a> : null}
-          </Alert>
+          <Alert tone={resendMessage.tone}>{resendMessage.text}</Alert>
         ) : null}
         <form onSubmit={onSubmit} noValidate>
           <TextField
@@ -82,30 +72,45 @@ export function LoginPage() {
             error={fieldErrors.email}
             onChange={(e) => setEmail(e.target.value)}
           />
-          <TextField
+          <PasswordField
             label="Password"
-            type="password"
             autoComplete="current-password"
             placeholder="••••••••••••"
             value={password}
             error={fieldErrors.password}
             onChange={(e) => setPassword(e.target.value)}
           />
-          <Button type="submit" block loading={pending}>
+          <div className="flex items-center justify-between mt-1 text-text-muted text-[13.5px]">
+            <label className="flex items-center gap-2 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={keepSignedIn}
+                onChange={(e) => setKeepSignedIn(e.target.checked)}
+                className="size-4 accent-[var(--color-accent)]"
+              />
+              <span>Remember me</span>
+            </label>
+            <Link to="/forgot-password" className="hover:text-text">
+              Forgot password?
+            </Link>
+          </div>
+          <Button type="submit" block loading={pending} className="mt-4">
             Sign in
           </Button>
         </form>
-        <div className="inline-form__row">
-          <Link to="/forgot-password">Forgot password?</Link>
-          <Link to="/signup">Create an account</Link>
+        <div className="flex items-center justify-center gap-2 mt-6 text-text-muted text-[13.5px]">
+          <span>
+            Don't have an account?{" "}
+            <Link to="/signup">Sign up</Link>
+          </span>
         </div>
-        {error !== null ? (
-          <div className="inline-form__row">
-            <Button variant="ghost" loading={resend.pending} onClick={onResend}>
-              Email not verified? Resend the link
-            </Button>
-          </div>
-        ) : null}
+        {/* Always available: the endpoint is enumeration-safe and rate-limited,
+            so the error never needs to reveal account state (C-3). */}
+        <div className="flex items-center justify-center gap-2 mt-3">
+          <Button variant="ghost" loading={resend.pending} onClick={sendVerification}>
+            Resend verification email
+          </Button>
+        </div>
       </Card>
     </AuthShell>
   );

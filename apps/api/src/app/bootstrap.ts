@@ -18,10 +18,22 @@ import {
   createSmtpEmailProvider,
   OUTBOX_POLL_MS,
 } from "../modules/email/email-service.js";
+import { createSecurityEventRepository } from "../modules/security-events/security-events-repository.js";
+import { createSecurityEventService } from "../modules/security-events/security-events-service.js";
+import { createJwtSigner } from "../modules/jwt/jwt-service.js";
+import { createRetentionJob } from "../infrastructure/jobs/retention.js";
 import { createApp } from "./app.js";
 
 const config = configFromEnv();
 const logger = createLogger(config.logLevel);
+
+// Single-instance deploys may set RUN_MIGRATIONS_ON_BOOT=true; multi-instance
+// deployments must migrate out-of-band (npm run migrate) to avoid boot races.
+if (config.runMigrationsOnBoot) {
+  const { migrateToLatest } = await import("../infrastructure/db/migrate.js");
+  const { applied } = await migrateToLatest(config);
+  logger.info({ applied }, "migrations applied on boot");
+}
 
 const { pool, db } = createDb(config);
 const hasher = createPasswordHasher({
@@ -31,11 +43,15 @@ const hasher = createPasswordHasher({
   hashLength: config.argonHashLength,
 });
 const limiter = createRateLimiter(config);
+// Pre-compute the enumeration-defense dummy hash so the first unknown-email login
+// pays verify cost only (spec §6.2: computed once at boot).
+await hasher.dummyHash();
 const users = createUserService(createUserRepository(db), hasher);
 const sessions = createSessionService(createSessionRepository(db), { getById: users.getById }, config);
 const tokens = createTokenService(createTokenRepository(db));
 const mfa = createMfaService({
   repository: createMfaRepository(db),
+  db,
   keys: config.mfaEncryptionKeys,
   issuer: config.jwtIssuer,
 });
@@ -46,17 +62,50 @@ if (config.emailProvider === "smtp") {
   }
   emailProvider = createSmtpEmailProvider(logger, config.smtpUrl);
 } else {
-  emailProvider = createConsoleEmailProvider(logger);
+  emailProvider = createConsoleEmailProvider(logger, {
+    allowDevLink: config.nodeEnv !== "production",
+  });
 }
 const emails = createEmailService({
   outbox: createOutboxRepository(db),
   provider: emailProvider,
   config,
+  keys: config.mfaEncryptionKeys,
+  logger,
 });
-const app = createApp({ config, logger, db, hasher, limiter, users, sessions, tokens, emails, mfa });
+const securityEvents = createSecurityEventService(createSecurityEventRepository(db), logger);
+
+const jwtSigner = createJwtSigner(config);
+if (config.jwtPrivateKey) {
+  await jwtSigner.validateKey().catch((err: unknown) => {
+    console.error("startup failed:", err);
+    process.exit(1);
+  });
+}
+
+const app = createApp({
+  config,
+  logger,
+  db,
+  hasher,
+  limiter,
+  users,
+  sessions,
+  tokens,
+  emails,
+  mfa,
+  provider: emailProvider,
+  keys: config.mfaEncryptionKeys,
+  securityEvents,
+  jwtSigner,
+});
 
 const server = app.listen(config.port, () => {
   logger.info({ port: config.port, env: config.nodeEnv }, "api listening");
+});
+server.on("error", (err) => {
+  logger.error({ err }, "server error");
+  void shutdown("server-error");
 });
 
 const emailWorker = setInterval(() => {
@@ -65,6 +114,10 @@ const emailWorker = setInterval(() => {
   });
 }, OUTBOX_POLL_MS);
 emailWorker.unref();
+
+// §6.13 data retention: hourly anonymize/purge sweeps (R-29).
+const retention = createRetentionJob(db, { retentionDays: config.retentionDays });
+const retentionHandle = retention.start(logger);
 
 let shutdownComplete = false;
 
@@ -80,24 +133,25 @@ async function shutdown(signal: string): Promise<void> {
     process.exit(1);
   }, 10_000);
   forceExitTimer.unref();
-  try {
-    server.close(async (closeErr) => {
-      await limiter.dispose();
-      await pool.end();
-      process.exit(closeErr ? 1 : 0);
-    });
-  } catch {
-    // server never started listening (e.g. EADDRINUSE)
+  // Close idle keep-alive sockets so server.close()'s callback fires once in-flight
+  // requests drain, instead of hanging until the force-exit timer.
+  server.closeIdleConnections();
+  server.close(async (closeErr) => {
+    // Flush any in-flight retention sweep while the pool is still alive.
+    await retentionHandle.stop();
     await limiter.dispose();
     await pool.end();
-    process.exit(1);
-  }
+    process.exit(closeErr ? 1 : 0);
+  });
 }
-
-server.on("error", (err) => {
-  logger.error({ err }, "server error");
-  void shutdown("server-error");
-});
 
 process.on("SIGINT", () => void shutdown("SIGINT"));
 process.on("SIGTERM", () => void shutdown("SIGTERM"));
+process.on("unhandledRejection", (reason) => {
+  logger.error({ err: reason }, "unhandled promise rejection");
+  void shutdown("unhandledRejection");
+});
+process.on("uncaughtException", (err) => {
+  logger.error({ err }, "uncaught exception");
+  void shutdown("uncaughtException");
+});

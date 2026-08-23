@@ -22,7 +22,7 @@ import { createSessionService } from "../src/modules/session/session-service.js"
 import { describeDb, resetTestDatabase, TEST_DATABASE_URL, TEST_MFA_KEY } from "./helpers/db.js";
 import { migrateToLatest } from "../src/infrastructure/db/migrate.js";
 
-const PASSWORD = "correct-horse-battery-staple-1";
+const PASSWORD = "Correct-horse-battery-staple-1";
 const BASE_URL = "/api/v1/auth";
 
 class RecordingProvider implements EmailProvider {
@@ -70,6 +70,7 @@ function makeApp(): TestHarness {
   const tokens = createTokenService(createTokenRepository(db));
   const mfa = createMfaService({
     repository: createMfaRepository(db),
+    db,
     keys: config.mfaEncryptionKeys,
     issuer: config.jwtIssuer,
   });
@@ -78,8 +79,10 @@ function makeApp(): TestHarness {
     outbox: createOutboxRepository(db),
     provider,
     config,
+    keys: config.mfaEncryptionKeys,
+    logger,
   });
-  const app = createApp({ config, logger, db, hasher, limiter, users, sessions, tokens, emails, mfa });
+  const app = createApp({ config, logger, db, hasher, limiter, users, sessions, tokens, emails, mfa, provider, keys: config.mfaEncryptionKeys });
   return { app, db, pool, users, provider };
 }
 
@@ -121,20 +124,21 @@ describeDb("auth endpoints", () => {
   });
 
   describe("signup", () => {
-    it("creates an account and returns the generic shape", async () => {
+    it("creates an account and returns the generic shape (no user echo)", async () => {
       const res = await signup(harness.app, "signup-1@example.com");
       expect(res.status).toBe(201);
-      expect(res.body.user.id).toMatch(/^usr_/);
-      expect(res.body.user.email).toBe("signup-1@example.com");
+      expect(res.body).toEqual({ message: "Check your inbox to verify your email." });
       expect(JSON.stringify(res.body)).not.toContain("password");
     });
 
-    it("is generic for duplicate accounts (no enumeration)", async () => {
+    it("is fully uniform for duplicate accounts (no enumeration)", async () => {
       const first = await signup(harness.app, "signup-2@example.com");
       const second = await signup(harness.app, "signup-2@example.com");
       expect(first.status).toBe(201);
       expect(second.status).toBe(201);
-      expect(second.body.user.id).toBe(first.body.user.id);
+      expect(second.body).toEqual(first.body);
+      // And no user data leaks in either response.
+      expect(JSON.stringify(second.body)).not.toContain("signup-2@example.com");
     });
 
     it("rejects a weak password", async () => {
@@ -188,12 +192,30 @@ describeDb("auth endpoints", () => {
       const res = await login(harness.app, "login-3@example.com");
       expect(res.status).toBe(200);
       expect(res.body.user.email).toBe("login-3@example.com");
-      const setCookie = res.headers["set-cookie"][0];
+      const setCookie = res.headers["set-cookie"]![0];
       expect(setCookie).toContain("ap_session=");
       expect(setCookie).toContain("HttpOnly");
       expect(setCookie).toContain("SameSite=Strict");
       expect(setCookie).toContain("Path=/");
       expect(setCookie).not.toContain("Domain=");
+    });
+
+    it("persists the cookie for sessionExpiryDays by default", async () => {
+      await activeUser("login-3b@example.com");
+      const res = await login(harness.app, "login-3b@example.com");
+      const setCookie = res.headers["set-cookie"]![0];
+      expect(setCookie).toMatch(/Max-Age=\d+/);
+    });
+
+    it("omits Max-Age when persistent is false (browser-session cookie)", async () => {
+      await activeUser("login-3c@example.com");
+      const res = await request(harness.app)
+        .post(`${BASE_URL}/login`)
+        .set("Origin", "http://localhost:5173")
+        .send({ email: "login-3c@example.com", password: PASSWORD, persistent: false });
+      expect(res.status).toBe(200);
+      const setCookie = res.headers["set-cookie"]![0];
+      expect(setCookie).not.toContain("Max-Age");
     });
 
     it("issues a fresh session secret on every login (fixation-safe)", async () => {
@@ -295,7 +317,7 @@ describeDb("auth endpoints", () => {
     }
 
     it("lists sessions and marks the current one", async () => {
-      const [cookieA, cookieB] = await twoSessions("sessions-1@example.com");
+      const [, cookieB] = await twoSessions("sessions-1@example.com");
       const res = await request(harness.app).get(`${BASE_URL}/sessions`).set("Cookie", cookieB);
       expect(res.status).toBe(200);
       expect(res.body.sessions).toHaveLength(2);
@@ -305,12 +327,12 @@ describeDb("auth endpoints", () => {
     });
 
     it("revokes a session owner-scoped; foreign id is 404", async () => {
-      const [cookieA, cookieB] = await twoSessions("sessions-2@example.com");
+      const [cookieA] = await twoSessions("sessions-2@example.com");
       const list = await request(harness.app).get(`${BASE_URL}/sessions`).set("Cookie", cookieA);
       const other = list.body.sessions.find((s: { isCurrent: boolean }) => !s.isCurrent);
-      const res = await request(harness.app).delete(`${BASE_URL}/sessions/${other.id}`).set("Cookie", cookieA);
+      const res = await request(harness.app).delete(`${BASE_URL}/sessions/${other.id}`).set("Origin", "http://localhost:5173").set("Cookie", cookieA);
       expect(res.status).toBe(204);
-      const foreign = await request(harness.app).delete(`${BASE_URL}/sessions/usr_does-not-exist`).set("Cookie", cookieA);
+      const foreign = await request(harness.app).delete(`${BASE_URL}/sessions/usr_does-not-exist`).set("Origin", "http://localhost:5173").set("Cookie", cookieA);
       expect(foreign.status).toBe(404);
       expect(foreign.body.error.code).toBe("NOT_FOUND");
     });
@@ -319,14 +341,14 @@ describeDb("auth endpoints", () => {
       const [cookieA, cookieB] = await twoSessions("sessions-3@example.com");
       const list = await request(harness.app).get(`${BASE_URL}/sessions`).set("Cookie", cookieA);
       const other = list.body.sessions.find((s: { isCurrent: boolean }) => !s.isCurrent);
-      await request(harness.app).delete(`${BASE_URL}/sessions/${other.id}`).set("Cookie", cookieA);
+      await request(harness.app).delete(`${BASE_URL}/sessions/${other.id}`).set("Origin", "http://localhost:5173").set("Cookie", cookieA);
       const dead = await request(harness.app).get(`${BASE_URL}/me`).set("Cookie", cookieB);
       expect(dead.status).toBe(401);
     });
 
     it("revokes all sessions", async () => {
       const [cookieA, cookieB] = await twoSessions("sessions-4@example.com");
-      const res = await request(harness.app).post(`${BASE_URL}/sessions/revoke-all`).set("Cookie", cookieA);
+      const res = await request(harness.app).post(`${BASE_URL}/sessions/revoke-all`).set("Origin", "http://localhost:5173").set("Cookie", cookieA);
       expect(res.status).toBe(204);
       const a = await request(harness.app).get(`${BASE_URL}/me`).set("Cookie", cookieA);
       const b = await request(harness.app).get(`${BASE_URL}/me`).set("Cookie", cookieB);
@@ -341,9 +363,9 @@ describeDb("auth endpoints", () => {
       const user = await harness.users.findByEmail("logout-1@example.com");
       await harness.users.verifyEmail(user!.id);
       const loginRes = await login(harness.app, "logout-1@example.com");
-      const res = await request(harness.app).post(`${BASE_URL}/logout`).set("Cookie", cookieOf(loginRes));
+      const res = await request(harness.app).post(`${BASE_URL}/logout`).set("Origin", "http://localhost:5173").set("Cookie", cookieOf(loginRes));
       expect(res.status).toBe(204);
-      expect(res.headers["set-cookie"].join(";")).toContain("Expires=Thu, 01 Jan 1970");
+      expect(Array.isArray(res.headers["set-cookie"]) ? res.headers["set-cookie"].join(";") : res.headers["set-cookie"]).toContain("Expires=Thu, 01 Jan 1970");
       const me = await request(harness.app).get(`${BASE_URL}/me`).set("Cookie", cookieOf(loginRes));
       expect(me.status).toBe(401);
     });
@@ -374,6 +396,40 @@ describeDb("auth endpoints", () => {
       const sixth = await login(harness.app, "ratelimit-login@example.com", "wrong-password-1234");
       expect(sixth.status).toBe(429);
       expect(sixth.body.error.code).toBe("RATE_LIMITED");
+    });
+
+    it("shares the failed-login bucket across email casing variants (no bypass)", async () => {
+      const email = "ratelimit-casing@example.com";
+      await signup(harness.app, email);
+      const user = await harness.users.findByEmail(email);
+      await harness.users.verifyEmail(user!.id);
+
+      for (let i = 0; i < 5; i++) {
+        // Vary casing each attempt — all must land in one normalized bucket.
+        const variant = [email, "RateLimit-Casing@example.com", "RATELIMIT-CASING@EXAMPLE.COM"][i % 3]!;
+        const res = await login(harness.app, variant, "wrong-password-1234");
+        expect(res.status).toBe(401);
+      }
+      const sixth = await login(harness.app, email, "wrong-password-1234");
+      expect(sixth.status).toBe(429);
+      expect(sixth.body.error.code).toBe("RATE_LIMITED");
+    });
+
+    it("locks the account itself and rejects further attempts while locked", async () => {
+      await signup(harness.app, "ratelimit-lock-account@example.com");
+      const user = await harness.users.findByEmail("ratelimit-lock-account@example.com");
+      await harness.users.verifyEmail(user!.id);
+      for (let i = 0; i < 5; i++) {
+        const res = await login(harness.app, "ratelimit-lock-account@example.com", "wrong-password-1234");
+        expect(res.status).toBe(401);
+      }
+      const sixth = await login(harness.app, "ratelimit-lock-account@example.com", "wrong-password-1234");
+      expect(sixth.status).toBe(429);
+      expect(sixth.body.error.code).toBe("RATE_LIMITED");
+      const after = await harness.users.findByEmail("ratelimit-lock-account@example.com");
+      expect(after!.lockedUntil).not.toBeNull();
+      const correctWhileLocked = await login(harness.app, "ratelimit-lock-account@example.com");
+      expect(correctWhileLocked.status).toBe(429);
     });
   });
 

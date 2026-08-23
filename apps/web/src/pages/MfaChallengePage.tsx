@@ -1,5 +1,5 @@
-import { type FormEvent, useState } from "react";
-import { Link, Navigate, useNavigate } from "react-router-dom";
+import { type SubmitEvent, useState } from "react";
+import { Link, Navigate, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../lib/auth";
 import { ApiError, mfaApi } from "../lib/api";
 import { useSubmit } from "../lib/submit";
@@ -13,8 +13,9 @@ type Mode = "totp" | "recovery";
 export function MfaChallengePage() {
   const { setUser } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
   const { pending, error, run, setError } = useSubmit();
-  const [mfaToken] = useState(() => sessionStorage.getItem("auuth.mfaToken"));
+  const mfaToken = (location.state as { mfaToken?: string } | null)?.mfaToken ?? null;
   const [code, setCode] = useState("");
   const [mode, setMode] = useState<Mode>("totp");
   const [fieldError, setFieldError] = useState<string | null>(null);
@@ -32,7 +33,7 @@ export function MfaChallengePage() {
     setError(null);
   }
 
-  function onSubmit(event: FormEvent) {
+  function onSubmit(event: SubmitEvent<HTMLFormElement>) {
     event.preventDefault();
     if (code.trim() === "") {
       setFieldError(mode === "totp" ? "Enter the 6-digit code" : "Enter a recovery code");
@@ -42,12 +43,10 @@ export function MfaChallengePage() {
     void run(async () => {
       try {
         const { user: next } = await mfaApi.verify({ mfaToken: token, code: code.trim() });
-        sessionStorage.removeItem("auuth.mfaToken");
         setUser(next);
         navigate("/", { replace: true });
       } catch (err) {
         if (err instanceof ApiError && err.code === "TOKEN_INVALID") {
-          sessionStorage.removeItem("auuth.mfaToken");
           setExpired(true);
           return;
         }
@@ -65,7 +64,7 @@ export function MfaChallengePage() {
         {expired ? (
           <>
             <Alert tone="error">This code expired. Please sign in again.</Alert>
-            <div className="inline-form__actions">
+            <div className="flex gap-2.5 mt-2">
               <Link to="/login">
                 <Button>Back to sign in</Button>
               </Link>
@@ -90,7 +89,7 @@ export function MfaChallengePage() {
                 Verify
               </Button>
             </form>
-            <div className="inline-form__actions">
+            <div className="flex gap-2.5 mt-2">
               <Button variant="ghost" onClick={toggleMode}>
                 {mode === "totp" ? "Use a recovery code" : "Use the authenticator app"}
               </Button>

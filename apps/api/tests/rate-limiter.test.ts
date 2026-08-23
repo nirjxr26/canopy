@@ -1,20 +1,39 @@
-import Redis from "ioredis";
+import { Redis } from "ioredis";
 import { describe, expect, it } from "vitest";
-import { InMemoryRateLimiter } from "../src/infrastructure/ratelimit/memory-rate-limiter.js";
+import { InMemoryRateLimiter, MAX_ENTRIES } from "../src/infrastructure/ratelimit/memory-rate-limiter.js";
 import { RedisRateLimiter } from "../src/infrastructure/ratelimit/redis-rate-limiter.js";
 import { runRateLimiterSuite } from "./rate-limiter.suite.js";
 import { probeRedis, TEST_REDIS_URL } from "./helpers/redis.js";
 
 const redisAvailable = await probeRedis();
 
-runRateLimiterSuite("memory", async () => {
-  const limiter = new InMemoryRateLimiter();
-  return { limiter, dispose: () => limiter.dispose() };
-});
+runRateLimiterSuite(
+  "memory",
+  async () => {
+    const limiter = new InMemoryRateLimiter();
+    return { limiter, dispose: () => limiter.dispose() };
+  },
+  {
+    makeAdvancingLimiter: () => {
+      let now = Date.now();
+      const limiter = new InMemoryRateLimiter({ now: () => now });
+      return {
+        limiter,
+        advanceTime: (ms: number) => {
+          now += ms;
+        },
+        dispose: () => limiter.dispose(),
+      };
+    },
+  },
+);
 
-describe("rate limiter (redis fail-open)", () => {
-  it("allows requests when redis errors instead of throwing", async () => {
+describe("rate limiter (redis fail-closed)", () => {
+  it("denies requests when redis errors instead of failing open", async () => {
     const client = {
+      eval: async () => {
+        throw new Error("connection refused");
+      },
       incr: async () => {
         throw new Error("connection refused");
       },
@@ -22,14 +41,15 @@ describe("rate limiter (redis fail-open)", () => {
       disconnect: () => undefined,
     } as unknown as Redis;
     const limiter = new RedisRateLimiter(client, { warn: () => undefined });
-    const result = await limiter.check("k-failopen", 3, 60_000);
-    expect(result.allowed).toBe(true);
-    expect(result.remaining).toBe(3);
+    const result = await limiter.check("k-failclosed", 3, 60_000);
+    expect(result.allowed).toBe(false);
+    expect(result.remaining).toBe(0);
+    expect(result.retryAfterMs).toBe(60_000);
   });
 });
 
 describe("in-memory limiter sweep", () => {
-  it("evicts entries whose window is older than STALE_WINDOW_MS", async () => {
+  it("evicts entries whose window has elapsed", async () => {
     let now = 0;
     const limiter = new InMemoryRateLimiter({ now: () => now });
     await limiter.check("k-a", 3, 3_600_000);
@@ -50,6 +70,30 @@ describe("in-memory limiter sweep", () => {
     expect(limiter.size).toBe(2);
     await limiter.dispose();
   });
+
+  it("keeps entries with windows longer than 1h after an hour passes", async () => {
+    let now = 0;
+    const limiter = new InMemoryRateLimiter({ now: () => now });
+    await limiter.check("k-24h", 3, 86_400_000);
+    now += 3_600_000;
+    await limiter.check("k-trigger", 3, 86_400_000);
+    expect(limiter.size).toBe(2);
+    await limiter.dispose();
+  });
+});
+
+describe("in-memory limiter capacity", () => {
+  it("stays at or below MAX_ENTRIES under high-cardinality inserts", async () => {
+    let now = 0;
+    const limiter = new InMemoryRateLimiter({ now: () => now });
+    let maxSize = 0;
+    for (let i = 0; i < 10_500; i++) {
+      await limiter.check(`k-${i}`, 3, 60_000);
+      maxSize = Math.max(maxSize, limiter.size);
+    }
+    expect(maxSize).toBeLessThanOrEqual(MAX_ENTRIES);
+    await limiter.dispose();
+  });
 });
 
 if (redisAvailable) {
@@ -59,7 +103,8 @@ if (redisAvailable) {
     const limiter = new RedisRateLimiter(client);
     return { limiter, dispose: () => limiter.dispose() };
   });
+} else if (process.env.VITEST_STRICT === "1") {
+  throw new Error("Redis unavailable but VITEST_STRICT=1 — refusing to silently skip redis suites");
 } else {
-  console.warn("redis unavailable — skipping redis rate-limiter tests");
-  describe.skip("rate limiter (redis)", () => {});
+  console.warn("redis unavailable — redis rate-limiter tests not registered");
 }

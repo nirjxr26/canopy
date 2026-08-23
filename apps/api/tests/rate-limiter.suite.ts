@@ -2,9 +2,16 @@ import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import type { RateLimiter } from "../src/infrastructure/ratelimit/rate-limiter.js";
 
+export interface AdvancingLimiter {
+  limiter: RateLimiter;
+  advanceTime: (ms: number) => void;
+  dispose: () => Promise<void>;
+}
+
 export function runRateLimiterSuite(
   backendName: string,
   makeLimiter: () => Promise<{ limiter: RateLimiter; dispose: () => Promise<void> }>,
+  opts?: { makeAdvancingLimiter?: () => AdvancingLimiter },
 ): void {
   describe(`rate limiter (${backendName})`, () => {
     it("allows requests under the limit", async () => {
@@ -40,10 +47,23 @@ export function runRateLimiterSuite(
     });
 
     it("resets when the fixed window elapses", async () => {
+      const key = `k-${randomUUID()}`;
+      const windowMs = 200;
+      if (opts?.makeAdvancingLimiter !== undefined) {
+        // Deterministic path: advance an injected clock instead of sleeping real timers.
+        const { limiter, advanceTime, dispose } = opts.makeAdvancingLimiter();
+        try {
+          expect((await limiter.check(key, 1, windowMs)).allowed).toBe(true);
+          expect((await limiter.check(key, 1, windowMs)).allowed).toBe(false);
+          advanceTime(windowMs + 1);
+          expect((await limiter.check(key, 1, windowMs)).allowed).toBe(true);
+        } finally {
+          await dispose();
+        }
+        return;
+      }
       const { limiter, dispose } = await makeLimiter();
       try {
-        const key = `k-${randomUUID()}`;
-        const windowMs = 200;
         expect((await limiter.check(key, 1, windowMs)).allowed).toBe(true);
         expect((await limiter.check(key, 1, windowMs)).allowed).toBe(false);
         await new Promise((resolve) => setTimeout(resolve, windowMs + 50));

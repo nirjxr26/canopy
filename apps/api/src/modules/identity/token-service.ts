@@ -12,13 +12,15 @@ export interface TokenService {
   issue(
     kind: TokenKind,
     userId: string,
-    now?: Date,
     metadata?: Record<string, unknown>,
+    now?: Date,
   ): Promise<string>;
   consume(kind: TokenKind, rawToken: string, now?: Date): Promise<string | null>;
   findByHash(kind: TokenKind, rawToken: string, now?: Date): Promise<PendingToken | null>;
   markUsed(id: string, now?: Date): Promise<void>;
   updateMetadata(id: string, patch: Record<string, unknown>): Promise<boolean>;
+  incrementMfaFailures(id: string): Promise<number | null>;
+  invalidateAll(kind: TokenKind, userId: string): Promise<number>;
 }
 
 export function hashToken(value: string): string {
@@ -27,7 +29,7 @@ export function hashToken(value: string): string {
 
 export function createTokenService(repository: TokenRepository): TokenService {
   return {
-    async issue(kind, userId, now = new Date(), metadata) {
+    async issue(kind, userId, metadata, now = new Date()) {
       const raw = randomBytes(32).toString("base64url");
       await repository.insert({
         id: createId("tok"),
@@ -57,6 +59,14 @@ export function createTokenService(repository: TokenRepository): TokenService {
 
     updateMetadata(id, patch) {
       return repository.updateMetadata(id, patch);
+    },
+
+    incrementMfaFailures(id) {
+      return repository.incrementMfaFailures(id);
+    },
+
+    invalidateAll(kind, userId) {
+      return repository.invalidateAll(kind, userId);
     },
   };
 }

@@ -7,7 +7,8 @@ import { migrations } from "./migrations/0001_initial_schema.js";
 export async function migrateToLatest(
   config: Pick<Config, "databaseUrl" | "dbPoolMin" | "dbPoolMax">,
 ): Promise<{ applied: string[] }> {
-  const { db, pool } = createDb(config);
+  // statement_timeout=0 disables the pool's 5s cap — DDL can legitimately run longer.
+  const { db, pool } = createDb(config, undefined, { statementTimeoutMs: 0 });
   try {
     const migrator = new Migrator({
       db,
@@ -36,8 +37,10 @@ async function main(): Promise<void> {
 }
 
 if (process.argv[1]?.endsWith("migrate.ts") || process.argv[1]?.endsWith("migrate.js")) {
-  main().catch((err) => {
+  try {
+    await main();
+  } catch (err) {
     process.stderr.write(`migrations failed: ${err instanceof Error ? err.message : String(err)}\n`);
     process.exitCode = 1;
-  });
+  }
 }

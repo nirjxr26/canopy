@@ -4,7 +4,7 @@ export interface User {
   firstName: string | null;
   lastName: string | null;
   emailVerified: boolean;
-  status: "PENDING_VERIFICATION" | "ACTIVE" | "LOCKED" | "DISABLED";
+  status: "PENDING_VERIFICATION" | "ACTIVE" | "SUSPENDED" | "LOCKED" | "DEACTIVATED";
   mfaEnabled: boolean;
   lastLoginAt: string | null;
 }
@@ -34,27 +34,51 @@ export class ApiError extends Error {
 export const PASSWORD_MIN_LENGTH = 12;
 export const PASSWORD_MAX_LENGTH = 128;
 
+export interface PasswordRequirement {
+  label: string;
+  met: boolean;
+}
+
+/** §6.5: length-only server policy; client mirrors for UX, server is the validator. */
+export function getPasswordRequirements(password: string): PasswordRequirement[] {
+  return [
+    {
+      label: `At least ${PASSWORD_MIN_LENGTH} characters`,
+      met: password.length >= PASSWORD_MIN_LENGTH,
+    },
+    {
+      label: `No more than ${PASSWORD_MAX_LENGTH} characters`,
+      met: password.length <= PASSWORD_MAX_LENGTH,
+    },
+  ];
+}
+
 export function assertPasswordValid(password: string): string | null {
-  if (password.length < PASSWORD_MIN_LENGTH || password.length > PASSWORD_MAX_LENGTH) {
-    return `Password must be ${PASSWORD_MIN_LENGTH}-${PASSWORD_MAX_LENGTH} characters`;
+  const unmet = getPasswordRequirements(password)
+    .filter((r) => !r.met)
+    .map((r) => r.label);
+  if (unmet.length > 0) {
+    return `Password must meet all requirements: ${unmet.join(", ")}.`;
   }
   return null;
 }
 
 export function isEmail(value: string): boolean {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+  return /^[^\s@]+@[^\s@.]+\.[^\s@]+$/.test(value);
 }
 
 interface RequestOptions {
   method?: string;
   body?: unknown;
+  signal?: AbortSignal;
 }
 
 export async function api<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const res = await fetch(path, {
     method: options.method ?? "GET",
     headers: options.body === undefined ? undefined : { "Content-Type": "application/json" },
-    credentials: "same-origin",
+    credentials: "include",
+    signal: options.signal ?? AbortSignal.timeout(15_000),
     body: options.body === undefined ? undefined : JSON.stringify(options.body),
   });
 
@@ -81,12 +105,12 @@ export async function api<T>(path: string, options: RequestOptions = {}): Promis
 
 export const authApi = {
   signup(input: { email: string; password: string; firstName?: string; lastName?: string }) {
-    return api<{ user: User; devEmailLink?: string }>("/api/v1/auth/signup", {
+    return api<{ message: string }>("/api/v1/auth/signup", {
       method: "POST",
       body: input,
     });
   },
-  login(input: { email: string; password: string }) {
+  login(input: { email: string; password: string; persistent?: boolean }) {
     return api<{ user: User } | { mfaRequired: true; mfaToken: string }>("/api/v1/auth/login", {
       method: "POST",
       body: input,
@@ -98,17 +122,20 @@ export const authApi = {
   me() {
     return api<{ user: User }>("/api/v1/auth/me");
   },
+  updateProfile(input: { firstName?: string; lastName?: string }) {
+    return api<{ user: User }>("/api/v1/auth/me", { method: "PATCH", body: input });
+  },
   verifyEmail(token: string) {
     return api<{ user: User }>("/api/v1/auth/verify-email", { method: "POST", body: { token } });
   },
   resendVerification(email: string) {
-    return api<{ devEmailLink?: string }>("/api/v1/auth/resend-verification", {
+    return api<Record<string, never>>("/api/v1/auth/resend-verification", {
       method: "POST",
       body: { email },
     });
   },
   forgotPassword(email: string) {
-    return api<{ devEmailLink?: string }>("/api/v1/auth/forgot-password", {
+    return api<Record<string, never>>("/api/v1/auth/forgot-password", {
       method: "POST",
       body: { email },
     });
@@ -119,19 +146,53 @@ export const authApi = {
       body: { token, newPassword },
     });
   },
+  changePassword(input: { currentPassword: string; newPassword: string }) {
+    return api<void>("/api/v1/auth/change-password", {
+      method: "POST",
+      body: input,
+    });
+  },
+};
+
+export interface Session {
+  id: string;
+  ipAddress: string | null;
+  userAgent: string | null;
+  createdAt: string;
+  expiresAt: string;
+  lastUsedAt: string;
+  isCurrent: boolean;
+}
+
+export const sessionsApi = {
+  list() {
+    return api<{ sessions: Session[] }>("/api/v1/auth/sessions");
+  },
+  revoke(id: string) {
+    return api<void>(`/api/v1/auth/sessions/${id}`, { method: "DELETE" });
+  },
+  revokeAll() {
+    return api<void>("/api/v1/auth/sessions/revoke-all", { method: "POST" });
+  },
 };
 
 export const mfaApi = {
   enroll() {
-    return api<{ secret: string; otpauthUrl: string }>("/api/v1/auth/mfa/enroll", { method: "POST" });
+    return api<{ secret: string; otpauthUrl: string }>("/api/v1/auth/enroll", { method: "POST" });
   },
-  confirm(input: { secret: string; code: string }) {
-    return api<{ recoveryCodes: string[] }>("/api/v1/auth/mfa/confirm", { method: "POST", body: input });
+  confirm(input: { code: string }) {
+    return api<{ recoveryCodes: string[] }>("/api/v1/auth/confirm", { method: "POST", body: input });
   },
   verify(input: { mfaToken: string; code: string }) {
-    return api<{ user: User }>("/api/v1/auth/mfa/verify", { method: "POST", body: input });
+    return api<{ user: User }>("/api/v1/auth/verify", { method: "POST", body: input });
   },
-  disable(code: string) {
-    return api<void>("/api/v1/auth/mfa/disable", { method: "POST", body: { code } });
+  disable(input: { currentPassword: string; code: string }) {
+    return api<void>("/api/v1/auth/disable", { method: "POST", body: input });
+  },
+  regenerateRecoveryCodes(input: { code: string }) {
+    return api<{ recoveryCodes: string[] }>("/api/v1/auth/recovery-codes/regenerate", {
+      method: "POST",
+      body: input,
+    });
   },
 };

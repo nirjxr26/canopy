@@ -1,35 +1,34 @@
 import { readFileSync } from "node:fs";
 import dotenv from "dotenv";
+import { sql } from "kysely";
 import { createDb } from "../src/infrastructure/db/database.js";
 
-async function main(): Promise<void> {
-  dotenv.config();
-  const databaseUrl = process.env.DATABASE_URL;
-  if (!databaseUrl) {
-    process.stderr.write("DATABASE_URL env var is required\n");
-    process.exitCode = 1;
-    return;
-  }
+dotenv.config();
+const databaseUrl = process.env.DATABASE_URL;
+if (!databaseUrl) {
+  process.stderr.write("DATABASE_URL env var is required\n");
+  process.exitCode = 1;
+} else {
   const { db, pool } = createDb({ databaseUrl, dbPoolMin: 0, dbPoolMax: 10 });
   try {
-    let sql = process.argv.slice(2).join(" ").trim();
-    if (!sql) {
+    let query = process.argv.slice(2).join(" ").trim();
+    if (!query) {
       try {
-        sql = readFileSync(0, "utf8").trim();
+        query = readFileSync(0, "utf8").trim();
       } catch {
-        sql = "";
+        query = "";
       }
     }
-    if (!sql) {
+    if (!query) {
       process.stderr.write('usage: echo "SELECT ..." | npm run db -w apps/api --\n');
       process.exitCode = 1;
-      return;
-    }
-    const { rows } = await db.executeQuery({ sql, parameters: [] });
-    if (rows.length === 0) {
-      process.stdout.write("query returned no rows\n");
     } else {
-      console.table(rows);
+      const { rows } = await db.executeQuery(sql.raw(query).compile(db));
+      if (rows.length === 0) {
+        process.stdout.write("query returned no rows\n");
+      } else {
+        console.table(rows);
+      }
     }
   } catch (err) {
     process.stderr.write(`query failed: ${err instanceof Error ? err.message : String(err)}\n`);
@@ -38,5 +37,3 @@ async function main(): Promise<void> {
     await pool.end();
   }
 }
-
-main();

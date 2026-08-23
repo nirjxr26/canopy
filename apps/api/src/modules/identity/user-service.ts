@@ -1,12 +1,40 @@
 import { AppError, ERROR_CODES } from "../../shared/app-error.js";
 import { createId } from "../../infrastructure/crypto/ulid.js";
 import type { PasswordHasher } from "../../infrastructure/crypto/password.js";
+import {
+  breachedPasswords,
+  containsEmailIdentity,
+} from "../../infrastructure/crypto/breached-passwords.js";
 import { normalizeEmail } from "./email-normalizer.js";
 import { assertTransition } from "./account-state-policy.js";
-import type { UserRecord, UserRepository, UserWithPasswordHash } from "./user-repository.js";
+import type { UserRecord, UserRepository, UserUpdate, UserWithPasswordHash } from "./user-repository.js";
 
 export const PASSWORD_MIN_LENGTH = 12;
 export const PASSWORD_MAX_LENGTH = 128;
+
+export interface PasswordPolicyContext {
+  /** Account identity — passwords embedding it are rejected (NIST 800-63B). */
+  email?: string;
+}
+
+export interface PasswordRequirement {
+  label: string;
+  met: boolean;
+}
+
+/** §6.5: length-only policy (complexity rules intentionally not used). */
+export function getPasswordRequirements(password: string): PasswordRequirement[] {
+  return [
+    {
+      label: `At least ${PASSWORD_MIN_LENGTH} characters`,
+      met: password.length >= PASSWORD_MIN_LENGTH,
+    },
+    {
+      label: `No more than ${PASSWORD_MAX_LENGTH} characters`,
+      met: password.length <= PASSWORD_MAX_LENGTH,
+    },
+  ];
+}
 
 export interface RegisterInput {
   email: string;
@@ -24,15 +52,109 @@ export interface UserService {
   register(input: RegisterInput): Promise<RegisterResult>;
   findByEmail(email: string): Promise<UserWithPasswordHash | null>;
   getById(id: string): Promise<UserRecord | null>;
+  updateProfile(id: string, input: { firstName?: string | null; lastName?: string | null }): Promise<UserRecord | null>;
   verifyEmail(id: string, now?: Date): Promise<void>;
   recordLogin(id: string, now?: Date): Promise<void>;
-  updatePassword(id: string, newPassword: string): Promise<void>;
+  updatePassword(id: string, newPassword: string, context?: PasswordPolicyContext): Promise<void>;
+  lockUntil(id: string, until: Date): Promise<void>;
   rehashPasswordIfNeeded(id: string, hash: string, plain: string): Promise<void>;
 }
 
-export function assertPasswordPolicy(password: string): void {
-  if (password.length < PASSWORD_MIN_LENGTH || password.length > PASSWORD_MAX_LENGTH) {
-    throw new AppError(ERROR_CODES.VALIDATION, `Password must be ${PASSWORD_MIN_LENGTH}-${PASSWORD_MAX_LENGTH} characters`);
+/**
+ * §6.5 policy: min/max length + breached-password blocklist + must-not-contain
+ * account identity. Server-side is the single source of truth (R-9).
+ */
+export function assertPasswordPolicy(password: string, context?: PasswordPolicyContext): void {
+  const unmet = getPasswordRequirements(password)
+    .filter((r) => !r.met)
+    .map((r) => r.label);
+  if (unmet.length > 0) {
+    throw new AppError(
+      ERROR_CODES.VALIDATION,
+      `Password must meet all requirements: ${unmet.join(", ")}.`,
+    );
+  }
+  if (breachedPasswords.isBreached(password)) {
+    throw new AppError(
+      ERROR_CODES.VALIDATION,
+      "This password appears in known data breaches — choose something more unique.",
+    );
+  }
+  if (context?.email && containsEmailIdentity(password, context.email)) {
+    throw new AppError(
+      ERROR_CODES.VALIDATION,
+      "Password must not contain your email address.",
+    );
+  }
+}
+
+async function registerUser(
+  repository: UserRepository,
+  hasher: PasswordHasher,
+  input: RegisterInput,
+): Promise<RegisterResult> {
+  let email: string;
+  try {
+    email = normalizeEmail(input.email);
+  } catch {
+    throw new AppError(ERROR_CODES.VALIDATION, "Invalid email address");
+  }
+  assertPasswordPolicy(input.password, { email });
+  const existing = await repository.findByEmail(email);
+  if (existing !== null) {
+    // §6.1 signup timing uniformity: burn one full argon2 verify so duplicate
+    // signups cost the same as fresh ones — latency must not reveal existence.
+    await hasher.verify(await hasher.dummyHash(), input.password);
+    return { created: false, user: existing };
+  }
+  const passwordHash = await hasher.hash(input.password);
+  const user = {
+    id: createId("usr"),
+    email,
+    passwordHash,
+    firstName: input.firstName?.trim() || undefined,
+    lastName: input.lastName?.trim() || undefined,
+  };
+  try {
+    const inserted = await repository.insert(user);
+    return { created: true, user: inserted };
+  } catch (err) {
+    if (isUniqueViolation(err, "users_email_key")) {
+      // The partial unique index only covers live rows (deleted_at IS NULL),
+      // so the conflicting row is always a live duplicate.
+      const winner = await repository.findByEmail(email);
+      return { created: false, user: winner };
+    }
+    throw err;
+  }
+}
+
+async function verifyUserEmail(
+  repository: UserRepository,
+  id: string,
+  now = new Date(),
+): Promise<void> {
+  const user = await repository.findById(id);
+  if (!user) {
+    return;
+  }
+  if (user.status === "ACTIVE" && user.emailVerifiedAt !== null) {
+    return;
+  }
+  assertTransition(user.status, "ACTIVE");
+  const updated = await repository.updateStatusIf(id, "PENDING_VERIFICATION", "ACTIVE", {
+    emailVerifiedAt: now,
+    updatedAt: now,
+  });
+  if (!updated) {
+    const fresh = await repository.findById(id);
+    if (!fresh) {
+      return;
+    }
+    if (fresh.emailVerifiedAt !== null) {
+      return;
+    }
+    throw new AppError(ERROR_CODES.CONFLICT, "Account state changed while verifying email");
   }
 }
 
@@ -41,37 +163,7 @@ export function createUserService(
   hasher: PasswordHasher,
 ): UserService {
   return {
-    async register(input) {
-      let email: string;
-      try {
-        email = normalizeEmail(input.email);
-      } catch {
-        throw new AppError(ERROR_CODES.VALIDATION, "Invalid email address");
-      }
-      assertPasswordPolicy(input.password);
-      const existing = await repository.findByEmail(email);
-      if (existing !== null) {
-        return { created: false, user: existing };
-      }
-      const passwordHash = await hasher.hash(input.password);
-      const user = {
-        id: createId("usr"),
-        email,
-        passwordHash,
-        firstName: input.firstName?.trim() || undefined,
-        lastName: input.lastName?.trim() || undefined,
-      };
-      try {
-        const inserted = await repository.insert(user);
-        return { created: true, user: inserted };
-      } catch (err) {
-        if (isUniqueViolation(err, "users_email_key")) {
-          const winner = await repository.findByEmail(email, true);
-          return { created: false, user: winner };
-        }
-        throw err;
-      }
-    },
+    register: (input) => registerUser(repository, hasher, input),
 
     findByEmail(email) {
       return repository.findByEmail(normalizeEmail(email));
@@ -81,30 +173,18 @@ export function createUserService(
       return repository.findById(id);
     },
 
-    async verifyEmail(id, now = new Date()) {
-      const user = await repository.findById(id);
-      if (!user) {
-        return;
-      }
-      if (user.status === "ACTIVE" && user.emailVerifiedAt !== null) {
-        return;
-      }
-      assertTransition(user.status, "ACTIVE");
-      const updated = await repository.updateStatusIf(id, "PENDING_VERIFICATION", "ACTIVE", {
-        emailVerifiedAt: now,
-        updatedAt: now,
-      });
+    async updateProfile(id, input) {
+      const patch: UserUpdate = { updatedAt: new Date() };
+      if (input.firstName !== undefined) patch.firstName = input.firstName;
+      if (input.lastName !== undefined) patch.lastName = input.lastName;
+      const updated = await repository.update(id, patch);
       if (!updated) {
-        const fresh = await repository.findById(id);
-        if (!fresh) {
-          return;
-        }
-        if (fresh.emailVerifiedAt !== null) {
-          return;
-        }
-        throw new AppError(ERROR_CODES.CONFLICT, "Account state changed while verifying email");
+        return null;
       }
+      return repository.findById(id);
     },
+
+    verifyEmail: (id, now = new Date()) => verifyUserEmail(repository, id, now),
 
     async recordLogin(id, now = new Date()) {
       const updated = await repository.update(id, { lastLoginAt: now, updatedAt: now });
@@ -113,10 +193,17 @@ export function createUserService(
       }
     },
 
-    async updatePassword(id, newPassword) {
-      assertPasswordPolicy(newPassword);
+    async updatePassword(id, newPassword, context?: PasswordPolicyContext) {
+      assertPasswordPolicy(newPassword, context);
       const passwordHash = await hasher.hash(newPassword);
       const updated = await repository.update(id, { passwordHash, updatedAt: new Date() });
+      if (!updated) {
+        throw new AppError(ERROR_CODES.NOT_FOUND, "User not found");
+      }
+    },
+
+    async lockUntil(id, until) {
+      const updated = await repository.update(id, { lockedUntil: until, updatedAt: new Date() });
       if (!updated) {
         throw new AppError(ERROR_CODES.NOT_FOUND, "User not found");
       }

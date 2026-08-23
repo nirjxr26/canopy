@@ -7,6 +7,10 @@ import type { SessionRecord, SessionRepository } from "./session-repository.js";
 export const SESSION_TOKEN_BYTES = 32;
 export const TOUCH_THROTTLE_MS = 60_000;
 
+function sha256(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
 export function sessionCookieName(cookieSecure: boolean): string {
   return cookieSecure ? "__Host-ap_session" : "ap_session";
 }
@@ -35,28 +39,37 @@ export interface SessionService {
   revokeAll(userId: string): Promise<number>;
   revokeAllExcept(userId: string, keepId: string): Promise<number>;
   listByUser(userId: string, currentSessionId: string): Promise<SessionListItem[]>;
+  findBySecret(secret: string, now?: number): Promise<SessionRecord | null>;
 }
 
 export function createSessionService(
   sessions: SessionRepository,
   getUsers: { getById(id: string): Promise<UserRecord | null> },
-  config: Pick<Config, "sessionExpiryDays">,
+  config: Pick<Config, "sessionExpiryDays" | "sessionIdleHours" | "maxActiveSessions">,
 ): SessionService {
-  function sha256(value: string): string {
-    return createHash("sha256").update(value).digest("hex");
+  // Single source of truth for session validity, shared by the cookie path
+  // (authenticate) and the service path (introspect via findBySecret).
+  function isLive(session: SessionRecord, now: number): boolean {
+    if (session.revokedAt !== null || session.expiresAt.getTime() <= now) {
+      return false;
+    }
+    const lastUsedMs = (session.lastUsedAt ?? session.createdAt).getTime();
+    return now - lastUsedMs <= config.sessionIdleHours * 3_600_000;
   }
 
   return {
     async createSession({ userId, ipAddress, userAgent, now }) {
+      const issuedAt = now ?? Date.now();
       const token = randomBytes(SESSION_TOKEN_BYTES).toString("base64url");
       const session = await sessions.insert({
-        id: createId("sess", now),
+        id: createId("sess", issuedAt),
         userId,
         tokenHash: sha256(token),
-        expiresAt: new Date(Date.now() + config.sessionExpiryDays * 24 * 60 * 60 * 1000),
+        expiresAt: new Date(issuedAt + config.sessionExpiryDays * 24 * 60 * 60 * 1000),
         ipAddress,
         userAgent,
       });
+      await sessions.pruneExcess(userId, config.maxActiveSessions);
       return { token, session };
     },
 
@@ -66,14 +79,11 @@ export function createSessionService(
         return null;
       }
       const session = await sessions.findByHash(sha256(token));
-      if (!session) {
-        return null;
-      }
-      if (session.revokedAt !== null || session.expiresAt.getTime() <= now) {
+      if (session === null || !isLive(session, now)) {
         return null;
       }
       const user = await getUsers.getById(session.userId);
-      if (!user || user.status !== "ACTIVE") {
+      if (user?.status !== "ACTIVE") {
         return null;
       }
       if (touch && now - session.lastUsedAt.getTime() >= TOUCH_THROTTLE_MS) {
@@ -95,11 +105,23 @@ export function createSessionService(
     },
 
     async listByUser(userId, currentSessionId) {
+      const now = Date.now();
       const rows = await sessions.listByUser(userId);
-      return rows.map((session) => ({
-        ...session,
-        isCurrent: session.id === currentSessionId,
-      }));
+      return rows
+        .filter((session) => session.revokedAt === null && session.expiresAt.getTime() > now)
+        .map((session) => ({
+          ...session,
+          isCurrent: session.id === currentSessionId,
+        }));
+    },
+
+    async findBySecret(secret, now = Date.now()) {
+      if (!secret) return null;
+      const session = await sessions.findByHash(sha256(secret));
+      if (session === null || !isLive(session, now)) {
+        return null;
+      }
+      return session;
     },
   };
 }

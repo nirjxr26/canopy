@@ -6,12 +6,13 @@ import { createUserRepository } from "../src/modules/identity/user-repository.js
 import {
   createUserService,
   PASSWORD_MAX_LENGTH,
-  PASSWORD_MIN_LENGTH,
 } from "../src/modules/identity/user-service.js";
 import { AppError } from "../src/shared/app-error.js";
 import { describeDb, resetTestDatabase, TEST_DATABASE_URL } from "./helpers/db.js";
 
 const FAST_PARAMS = { memoryCostKiB: 64, timeCost: 1, parallelism: 1, hashLength: 32 };
+const PASSWORD = "Correct-horse-battery-staple-1";
+const PASSWORD_NEW = "Another-correct-horse-battery-staple-2";
 
 describeDb("user service", () => {
   let db: Awaited<ReturnType<typeof createDb>>["db"];
@@ -28,7 +29,7 @@ describeDb("user service", () => {
 
   it("registers a user: normalized email, argon2id hash, PENDING_VERIFICATION", async () => {
     const email = `Svc-${Date.now()}@Example.com`;
-    const result = await service.register({ email, password: "correct horse battery staple" });
+    const result = await service.register({ email, password: PASSWORD });
 
     expect(result.created).toBe(true);
     expect(result.user!.email).toBe(email.toLowerCase());
@@ -43,8 +44,8 @@ describeDb("user service", () => {
 
   it("returns created=false for a duplicate email without throwing", async () => {
     const email = `dup-${Date.now()}@example.com`;
-    const first = await service.register({ email, password: "some long password here" });
-    const second = await service.register({ email, password: "another long password here" });
+    const first = await service.register({ email, password: PASSWORD });
+    const second = await service.register({ email, password: PASSWORD_NEW });
 
     expect(first.created).toBe(true);
     expect(second.created).toBe(false);
@@ -63,18 +64,18 @@ describeDb("user service", () => {
       },
     });
 
-    const first = await countingService.register({ email, password: "some long password here" });
+    const first = await countingService.register({ email, password: PASSWORD });
     expect(first.created).toBe(true);
     expect(hashCalls).toBe(1);
 
-    const second = await countingService.register({ email, password: "another long password here" });
+    const second = await countingService.register({ email, password: PASSWORD_NEW });
     expect(second.created).toBe(false);
     expect(hashCalls).toBe(1);
   });
 
   it("allows re-registering an email after the previous account was soft-deleted", async () => {
     const email = `resurrect-${Date.now()}@example.com`;
-    const first = await service.register({ email, password: "some long password here" });
+    const first = await service.register({ email, password: PASSWORD });
 
     await db
       .updateTable("users")
@@ -82,14 +83,14 @@ describeDb("user service", () => {
       .where("id", "=", first.user!.id)
       .execute();
 
-    const second = await service.register({ email, password: "brand new long password" });
+    const second = await service.register({ email, password: PASSWORD_NEW });
     expect(second.created).toBe(true);
     expect(second.user!.id).not.toBe(first.user!.id);
   });
 
   it("verifyEmail does not clobber an admin suspension", async () => {
     const email = `suspend-${Date.now()}@example.com`;
-    const { user } = await service.register({ email, password: "some long password here" });
+    const { user } = await service.register({ email, password: PASSWORD });
 
     await repo.update(user!.id, { status: "SUSPENDED" });
     await expect(service.verifyEmail(user!.id)).rejects.toMatchObject({ code: "CONFLICT" });
@@ -98,7 +99,7 @@ describeDb("user service", () => {
 
   it("recordLogin and updatePassword on a deleted account throw NOT_FOUND", async () => {
     const email = `ghost-${Date.now()}@example.com`;
-    const { user } = await service.register({ email, password: "some long password here" });
+    const { user } = await service.register({ email, password: PASSWORD });
 
     await db
       .updateTable("users")
@@ -107,7 +108,7 @@ describeDb("user service", () => {
       .execute();
 
     await expect(service.recordLogin(user!.id)).rejects.toMatchObject({ code: "NOT_FOUND" });
-    await expect(service.updatePassword(user!.id, "a new long password")).rejects.toMatchObject({
+    await expect(service.updatePassword(user!.id, PASSWORD_NEW)).rejects.toMatchObject({
       code: "NOT_FOUND",
     });
   });
@@ -121,16 +122,16 @@ describeDb("user service", () => {
       code: "VALIDATION",
     });
     await expect(service.register({ email: long, password: longPassword })).rejects.toBeInstanceOf(AppError);
-    await expect(service.register({ email: `ok-${Date.now()}@example.com`, password: "x".repeat(PASSWORD_MIN_LENGTH) })).resolves.toMatchObject({ created: true });
+    await expect(service.register({ email: `ok-${Date.now()}@example.com`, password: PASSWORD })).resolves.toMatchObject({ created: true });
   });
 
   it("rejects invalid email shapes with VALIDATION", async () => {
-    await expect(service.register({ email: "not-an-email", password: "valid password here" })).rejects.toMatchObject({ code: "VALIDATION" });
+    await expect(service.register({ email: "not-an-email", password: PASSWORD })).rejects.toMatchObject({ code: "VALIDATION" });
   });
 
   it("verifyEmail transitions the account to ACTIVE and stamps emailVerifiedAt", async () => {
     const email = `verify-${Date.now()}@example.com`;
-    const { user } = await service.register({ email, password: "some long password here" });
+    const { user } = await service.register({ email, password: PASSWORD });
 
     await service.verifyEmail(user!.id);
     const reloaded = (await repo.findById(user!.id))!;
@@ -140,7 +141,7 @@ describeDb("user service", () => {
 
   it("recordLogin stamps last_login_at", async () => {
     const email = `login-${Date.now()}@example.com`;
-    const { user } = await service.register({ email, password: "some long password here" });
+    const { user } = await service.register({ email, password: PASSWORD });
 
     await service.recordLogin(user!.id);
     expect((await repo.findById(user!.id))!.lastLoginAt).not.toBeNull();
@@ -148,18 +149,18 @@ describeDb("user service", () => {
 
   it("updatePassword replaces the hash so old passwords stop working", async () => {
     const email = `pw-${Date.now()}@example.com`;
-    const { user } = await service.register({ email, password: "first long password" });
+    const { user } = await service.register({ email, password: PASSWORD });
 
-    await service.updatePassword(user!.id, "second long password");
+    await service.updatePassword(user!.id, PASSWORD_NEW);
     const stored = (await repo.findById(user!.id))!;
     const hasher = createPasswordHasher(FAST_PARAMS);
-    expect(await hasher.verify(stored.passwordHash, "second long password")).toBe(true);
-    expect(await hasher.verify(stored.passwordHash, "first long password")).toBe(false);
+    expect(await hasher.verify(stored.passwordHash, PASSWORD_NEW)).toBe(true);
+    expect(await hasher.verify(stored.passwordHash, PASSWORD)).toBe(false);
   });
 
   it("rehashPasswordIfNeeded upgrades stale hashes transparently", async () => {
     const email = `rehash-${Date.now()}@example.com`;
-    const { user } = await service.register({ email, password: "some long password here" });
+    const { user } = await service.register({ email, password: PASSWORD });
 
     const staleParams = { ...FAST_PARAMS, timeCost: 1 };
     const currentParams = { ...FAST_PARAMS, timeCost: 3 };

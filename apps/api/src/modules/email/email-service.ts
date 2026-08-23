@@ -1,10 +1,13 @@
 import type pino from "pino";
 import nodemailer from "nodemailer";
-import type { Config } from "../../infrastructure/config/config.js";
+import type { Config, EncryptionKeyEntry } from "../../infrastructure/config/config.js";
+import { decryptSecret, encryptSecret } from "../../infrastructure/crypto/cipher.js";
+import { createId } from "../../infrastructure/crypto/ulid.js";
 import type { OutboxRepository } from "./outbox-repository.js";
 
 export const OUTBOX_POLL_MS = 15_000;
 const OUTBOX_BATCH_SIZE = 100;
+export const EMAIL_LEASE_MS = 5 * 60_000;
 
 export interface EmailMessage {
   from: string;
@@ -19,25 +22,41 @@ export interface EmailProvider {
   send(message: EmailMessage): Promise<void>;
 }
 
-export function createConsoleEmailProvider(logger: pino.Logger): EmailProvider {
+/** Strips the token query parameter so centralized log sinks never capture live links. */
+export function redactTokenFromUrl(url: string): string {
+  return url.replace(/([?&]token=)[^&\s]+/g, "$1[REDACTED]");
+}
+
+export function createConsoleEmailProvider(
+  logger: pino.Logger,
+  opts: { allowDevLink?: boolean } = {},
+): EmailProvider {
+  const allowDevLink = opts.allowDevLink ?? false;
   return {
     kind: "console",
     async send(message) {
+      const linkLine = message.body.split("\n").find((l) => l.includes("http")) ?? "";
+      // Info level (what sinks collect) carries a REDACTED link only; the full
+      // clickable link is dev-only ergonomics and never leaves debug/local.
       logger.info(
-        { from: message.from, to: message.to, subject: message.subject },
-        `email outbox: sending to ${message.to} — subject: ${message.subject}`,
+        { to: message.to, subject: message.subject, link: redactTokenFromUrl(linkLine) },
+        `email outbox: ${message.subject} queued`,
       );
-      logger.debug({ body: message.body }, "email outbox body");
+      if (allowDevLink && linkLine !== "") {
+        logger.info({ link: linkLine }, "email outbox: dev link (console provider)");
+      } else {
+        logger.debug({ to: message.to, subject: message.subject, link: linkLine }, "email outbox: full link");
+      }
     },
   };
 }
 
 function escapeHtml(value: string): string {
   return value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll("\"", "&quot;");
 }
 
 function renderEmailHtml(deps: {
@@ -51,7 +70,7 @@ function renderEmailHtml(deps: {
   return (
     `<!doctype html><html><body style="margin:0;padding:0;background:#f4f5f7;font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif">` +
     `<div style="max-width:480px;margin:40px auto;background:#ffffff;border-radius:12px;padding:32px;border:1px solid #e6e8ee">` +
-    `<div style="font-size:20px;font-weight:700;color:#0b0d12">auuth</div>` +
+    `<div style="font-size:20px;font-weight:700;color:#0b0d12">CanopY</div>` +
     `<h1 style="font-size:18px;color:#0b0d12;margin:24px 0 8px">${escapeHtml(heading)}</h1>` +
     `<p style="color:#5b6472;font-size:14px;line-height:1.6;margin:0 0 24px">To continue, open the link below. You can also copy and paste it into your browser.</p>` +
     `<a href="${href}" style="display:inline-block;background:#6d8dff;color:#ffffff;text-decoration:none;font-weight:600;padding:12px 24px;border-radius:8px;font-size:14px">${escapeHtml(buttonLabel)}</a>` +
@@ -76,12 +95,13 @@ export function createSmtpEmailProvider(
   } catch (err) {
     throw new Error(
       `Invalid SMTP_URL: ${err instanceof Error ? err.message : String(err)}`,
+      { cause: err },
     );
   }
   return {
     kind: "smtp",
     async send(message) {
-      transport ??= nodemailer.createTransport(smtpUrl);
+      transport ??= nodemailer.createTransport(smtpUrl); //NOSONAR
       const info = await transport.sendMail({
         from: message.from,
         to: message.to,
@@ -107,7 +127,7 @@ export interface EmailService {
     kind: EmailKind,
     recipient: string,
     token: string,
-  ): Promise<{ devLink: string | null }>;
+  ): Promise<void>;
   processDueEmails(now?: Date): Promise<number>;
 }
 
@@ -120,8 +140,11 @@ export function createEmailService(deps: {
   outbox: OutboxRepository;
   provider: EmailProvider;
   config: Pick<Config, "emailFrom" | "frontendUrl" | "emailRetryMax" | "emailRetryBackoffMs">;
+  keys: readonly EncryptionKeyEntry[];
+  logger: pino.Logger;
 }): EmailService {
-  const { outbox, provider, config } = deps;
+  const { outbox, provider, config, keys, logger } = deps;
+  const workerId = createId("wk");
 
   function buildMessage(kind: EmailKind, recipient: string, token: string): {
     message: EmailMessage;
@@ -153,32 +176,66 @@ export function createEmailService(deps: {
   return {
     async queue(kind, recipient, token) {
       const { message, url } = buildMessage(kind, recipient, token);
+      const sealed = encryptSecret(JSON.stringify({ text: message.body, html: message.html }), keys);
+      const sealedUrl = encryptSecret(url, keys);
       await outbox.insert({
         recipient: message.to,
         subject: message.subject,
-        body: message.body,
-        htmlBody: message.html ?? null,
+        body: sealed.encrypted,
+        htmlBody: null,
+        tokenRef: sealedUrl.encrypted,
+        messageId: createId("eml"),
       });
-      return { devLink: provider.kind === "console" ? url : null };
     },
 
     async processDueEmails(now = new Date()) {
-      const due = await outbox.pickDue(now, config.emailRetryMax, OUTBOX_BATCH_SIZE);
+      const due = await outbox.claim(
+        now,
+        config.emailRetryMax,
+        OUTBOX_BATCH_SIZE,
+        EMAIL_LEASE_MS,
+        workerId,
+      );
       let sent = 0;
       for (const message of due) {
         try {
+          let body = message.body;
+          let html = message.htmlBody ?? undefined;
+          if (message.tokenRef !== null) {
+            const payload = JSON.parse(decryptSecret(message.body, keys)) as {
+              text: string;
+              html?: string;
+            };
+            body = payload.text;
+            html = payload.html;
+          }
           await provider.send({
             from: config.emailFrom,
             to: message.recipient,
             subject: message.subject,
-            body: message.body,
-            html: message.htmlBody ?? undefined,
+            body,
+            html,
           });
           await outbox.markSent(message.id, now);
           sent += 1;
-        } catch {
+        } catch (err) {
           const backoff = config.emailRetryBackoffMs * 2 ** message.attemptCount;
-          await outbox.recordFailure(message.id, new Date(now.getTime() + backoff));
+          const failure = await outbox.recordFailure(
+            message.id,
+            new Date(now.getTime() + backoff),
+            config.emailRetryMax,
+          );
+          if (failure?.status === "dead") {
+            logger.error(
+              {
+                messageId: message.messageId,
+                recipient: message.recipient,
+                attempts: failure.attemptCount,
+                error: err instanceof Error ? err.message : String(err),
+              },
+              "email outbox: message failed permanently",
+            );
+          }
         }
       }
       return sent;

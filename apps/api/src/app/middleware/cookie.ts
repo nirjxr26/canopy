@@ -4,7 +4,8 @@ import { sessionCookieName } from "../../modules/session/session-service.js";
 export interface CookieOptions {
   httpOnly?: boolean;
   secure?: boolean;
-  sameSite?: "strict" | "lax" | "none";
+  // "none" excluded: SameSite=None requires Secure; use config.cookieSecure instead.
+  sameSite?: "strict" | "lax";
   maxAgeMs?: number;
   path?: string;
 }
@@ -14,6 +15,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 export function sessionCookieValue(
   config: Pick<Config, "cookieSecure" | "sessionExpiryDays">,
   token: string,
+  persistent: boolean = true,
 ): string {
   const name = sessionCookieName(config.cookieSecure);
   return serializeCookie(name, token, {
@@ -21,7 +23,7 @@ export function sessionCookieValue(
     secure: config.cookieSecure,
     sameSite: "strict",
     path: "/",
-    maxAgeMs: config.sessionExpiryDays * DAY_MS,
+    maxAgeMs: persistent ? config.sessionExpiryDays * DAY_MS : undefined,
   });
 }
 
@@ -41,7 +43,11 @@ export function parseCookies(header: string | undefined): Map<string, string> {
       value = value.slice(1, -1);
     }
     if (name !== "") {
-      cookies.set(name, decodeURIComponent(value));
+      try {
+        cookies.set(name, decodeURIComponent(value));
+      } catch {
+        // Malformed percent-encoding; treat the cookie as absent.
+      }
     }
   }
   return cookies;

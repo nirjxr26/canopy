@@ -3,15 +3,13 @@ import { currentWindowStart, type RateLimiter, type RateLimitResult } from "./ra
 interface WindowEntry {
   windowStart: number;
   count: number;
+  lastSeen: number;
+  windowMs: number;
 }
 
-const MAX_ENTRIES_BEFORE_SWEEP = 10_000;
+export const MAX_ENTRIES = 10_000;
 // ponytail: sweep at most once a minute regardless of map size
 const SWEEP_THROTTLE_MS = 60_000;
-// ponytail: entries older than 1h are stale — the 1h cutoff sits at the max
-// configured window (3_600_000ms, see DEFAULT_RATE_LIMITS) so no live window
-// is ever evicted
-const STALE_WINDOW_MS = 3_600_000;
 
 export class InMemoryRateLimiter implements RateLimiter {
   readonly backend = "memory" as const;
@@ -34,8 +32,11 @@ export class InMemoryRateLimiter implements RateLimiter {
     this.sweepIfNeeded(now);
 
     const entry = this.windows.get(key);
-    if (entry === undefined || entry.windowStart !== windowStart) {
-      this.windows.set(key, { windowStart, count: 1 });
+    if (entry?.windowStart !== windowStart) {
+      if (entry === undefined && this.windows.size >= MAX_ENTRIES) {
+        this.evictOldest(1);
+      }
+      this.windows.set(key, { windowStart, count: 1, lastSeen: now, windowMs });
       return {
         allowed: limit >= 1,
         limit,
@@ -46,6 +47,7 @@ export class InMemoryRateLimiter implements RateLimiter {
 
     const count = entry.count + 1;
     entry.count = count;
+    entry.lastSeen = now;
     return {
       allowed: count <= limit,
       limit,
@@ -59,14 +61,34 @@ export class InMemoryRateLimiter implements RateLimiter {
   }
 
   private sweepIfNeeded(now: number): void {
-    if (this.windows.size < MAX_ENTRIES_BEFORE_SWEEP && now - this.lastSweepAt < SWEEP_THROTTLE_MS) {
+    // Throttle unconditionally: once at capacity, sweeping on every request would
+    // turn each check into an O(n) scan; insert-time eviction still caps size.
+    if (now - this.lastSweepAt < SWEEP_THROTTLE_MS) {
       return;
     }
     this.lastSweepAt = now;
-    const cutoff = now - STALE_WINDOW_MS;
     for (const [key, entry] of this.windows) {
-      if (entry.windowStart < cutoff) {
+      if (now - entry.lastSeen > entry.windowMs) {
         this.windows.delete(key);
+      }
+    }
+    if (this.windows.size > MAX_ENTRIES) {
+      this.evictOldest(this.windows.size - MAX_ENTRIES);
+    }
+  }
+
+  private evictOldest(count: number): void {
+    for (let i = 0; i < count; i++) {
+      let oldestKey: string | undefined;
+      let oldestSeen = Number.MAX_SAFE_INTEGER;
+      for (const [key, entry] of this.windows) {
+        if (entry.lastSeen < oldestSeen) {
+          oldestSeen = entry.lastSeen;
+          oldestKey = key;
+        }
+      }
+      if (oldestKey !== undefined) {
+        this.windows.delete(oldestKey);
       }
     }
   }

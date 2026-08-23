@@ -1,8 +1,7 @@
-import { type FormEvent, useState } from "react";
+import { type SubmitEvent, useState } from "react";
 import { Link } from "react-router-dom";
-import { authApi } from "../lib/api";
+import { authApi, isEmail } from "../lib/api";
 import { useSubmit } from "../lib/submit";
-import { isEmail } from "../lib/api";
 import { Alert } from "../ui/Alert";
 import { Button } from "../ui/Button";
 import { AuthShell, Card } from "../ui/Layout";
@@ -13,9 +12,8 @@ export function ForgotPasswordPage() {
   const [email, setEmail] = useState("");
   const [emailError, setEmailError] = useState<string | null>(null);
   const [done, setDone] = useState(false);
-  const [devLink, setDevLink] = useState<string | null>(null);
 
-  function onSubmit(event: FormEvent) {
+  function onSubmit(event: SubmitEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!isEmail(email)) {
       setEmailError("Enter a valid email address");
@@ -23,8 +21,7 @@ export function ForgotPasswordPage() {
     }
     setEmailError(null);
     void run(async () => {
-      const result = await authApi.forgotPassword(email);
-      setDevLink(result.devEmailLink ?? null);
+      await authApi.forgotPassword(email);
       setDone(true);
     });
   }
@@ -37,13 +34,7 @@ export function ForgotPasswordPage() {
             If <strong>{email}</strong> is registered, we've sent a password reset link to it. It
             expires in 30 minutes.
           </Alert>
-          {devLink !== null ? (
-            <Alert tone="info">
-              Dev mode: reset emails aren't really sent, so here's your link —{" "}
-              <a href={devLink}>{devLink}</a>
-            </Alert>
-          ) : null}
-          <div className="inline-form__actions">
+          <div className="flex gap-2.5 mt-2">
             <Link to="/login">
               <Button variant="ghost">Back to sign in</Button>
             </Link>
@@ -54,7 +45,7 @@ export function ForgotPasswordPage() {
   }
 
   return (
-    <AuthShell footer="Auuth never reveals whether an email is registered.">
+    <AuthShell>
       <Card title="Forgot your password?" subtitle="Enter your email and we'll send you a reset link.">
         {error ? <Alert tone="error">{error}</Alert> : null}
         <form onSubmit={onSubmit} noValidate>
@@ -71,7 +62,7 @@ export function ForgotPasswordPage() {
             Send reset link
           </Button>
         </form>
-        <div className="inline-form__row">
+        <div className="flex items-center justify-between gap-2 mt-3 text-text-muted text-[13.5px]">
           <span>
             Remembered it? <Link to="/login">Sign in</Link>
           </span>

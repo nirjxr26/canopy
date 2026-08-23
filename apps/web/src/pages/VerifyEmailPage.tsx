@@ -29,18 +29,18 @@ export function VerifyEmailPage() {
   }, [token, run]);
 
   return (
-    <AuthShell footer="Auuth keeps the link single-use — once used it can't be reused.">
+    <AuthShell footer="CanopY keeps the link single-use — once used it can't be reused.">
       <Card title="Email verification" subtitle="Confirming your email address...">
         {state === "checking" ? (
-          <div className="inline-form">
-            <span className="spinner spinner--plain" aria-hidden="true" />
-            <p>Verifying your email. This should only take a moment.</p>
+          <div className="flex flex-col items-center justify-center gap-3 my-6">
+            <span className="w-5 h-5 border-2 border-accent/25 border-t-accent rounded-full animate-spin" aria-hidden="true" />
+            <p className="text-sm text-text-muted">Verifying your email. This should only take a moment.</p>
           </div>
         ) : null}
         {state === "success" ? (
           <>
             <Alert tone="success">Your email has been verified. You can now sign in.</Alert>
-            <div className="inline-form__actions">
+            <div className="flex gap-2.5 mt-2">
               <Link to="/login">
                 <Button>Go to sign in</Button>
               </Link>
@@ -52,7 +52,7 @@ export function VerifyEmailPage() {
             <Alert tone="error">
               This verification link is invalid or has expired. Request a new one and try again.
             </Alert>
-            <div className="inline-form">
+            <div className="flex flex-col gap-1 mt-4">
               {pending ? null : (
                 <Button
                   variant="ghost"

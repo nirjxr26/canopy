@@ -25,9 +25,11 @@ import {
 } from "../src/modules/email/email-service.js";
 import { describeDb, resetTestDatabase, TEST_DATABASE_URL, TEST_MFA_KEY } from "./helpers/db.js";
 import { migrateToLatest } from "../src/infrastructure/db/migrate.js";
+import { decryptSecret } from "../src/infrastructure/crypto/cipher.js";
+import type { EncryptionKeyEntry } from "../src/infrastructure/config/config.js";
 
-const PASSWORD = "correct-horse-battery-staple-1";
-const NEW_PASSWORD = "new-correct-horse-battery-staple-2";
+const PASSWORD = "Correct-horse-battery-staple-1";
+const NEW_PASSWORD = "New-correct-horse-battery-staple-2";
 const ORIGIN = "http://localhost:5173";
 const BASE_URL = "/api/v1/auth";
 
@@ -58,6 +60,7 @@ interface TestHarness {
   pool: { end(): Promise<void> };
   users: ReturnType<typeof createUserService>;
   provider: RecordingProvider;
+  keys: readonly EncryptionKeyEntry[];
 }
 
 function makeApp(): TestHarness {
@@ -76,6 +79,7 @@ function makeApp(): TestHarness {
   const tokens = createTokenService(createTokenRepository(db));
   const mfa = createMfaService({
     repository: createMfaRepository(db),
+    db,
     keys: config.mfaEncryptionKeys,
     issuer: config.jwtIssuer,
   });
@@ -84,9 +88,11 @@ function makeApp(): TestHarness {
     outbox: createOutboxRepository(db),
     provider,
     config,
+    keys: config.mfaEncryptionKeys,
+    logger,
   });
-  const app = createApp({ config, logger, db, hasher, limiter, users, sessions, tokens, emails, mfa });
-  return { app, db, pool, users, provider };
+  const app = createApp({ config, logger, db, hasher, limiter, users, sessions, tokens, emails, mfa, provider, keys: config.mfaEncryptionKeys });
+  return { app, db, pool, users, provider, keys: config.mfaEncryptionKeys };
 }
 
 function cookieOf(res: request.Response): string {
@@ -147,6 +153,11 @@ function tokenFromBody(body: string): string {
   return match[1]!;
 }
 
+function unsealBody(body: string, keys: readonly EncryptionKeyEntry[]): string {
+  const parsed = JSON.parse(decryptSecret(body, keys)) as { text: string };
+  return parsed.text;
+}
+
 describeDb("verification & recovery endpoints", () => {
   beforeAll(async () => {
     await resetTestDatabase();
@@ -169,7 +180,7 @@ describeDb("verification & recovery endpoints", () => {
       .where("recipient", "=", email)
       .orderBy("id", "desc")
       .executeTakeFirstOrThrow();
-    return { token: tokenFromBody(message.body) };
+    return { token: tokenFromBody(unsealBody(message.body, harness.keys)) };
   }
 
   describe("verify-email", () => {
@@ -183,7 +194,7 @@ describeDb("verification & recovery endpoints", () => {
         .where("recipient", "=", email)
         .executeTakeFirstOrThrow();
       expect(message.subject).toBe("Verify your email");
-      const token = tokenFromBody(message.body);
+      const token = tokenFromBody(unsealBody(message.body, harness.keys));
       const activated = await verifyEmail(harness.app, token);
       expect(activated.status).toBe(200);
     });
@@ -239,22 +250,28 @@ describeDb("verification & recovery endpoints", () => {
       await signup(harness.app, email);
       const res = await resend(harness.app, email);
       expect(res.status).toBe(200);
-      expect(res.body.devEmailLink).toContain("verify-email?token=");
+      expect(res.body).toEqual({}); // §6.1 uniform response — no link echo
       const user = await harness.users.findByEmail(email);
-      const message = await harness.db
+      const messages = await harness.db
         .selectFrom("email_outbox")
         .selectAll()
         .where("recipient", "=", email)
-        .executeTakeFirstOrThrow();
-      expect(message.subject).toBe("Verify your email");
-      expect(message.body).toContain("verify-email?token=");
-      const tokenRow = await harness.db
+        .orderBy("id", "asc")
+        .execute();
+      // signup + resend
+      expect(messages).toHaveLength(2);
+      expect(messages[1]!.subject).toBe("Verify your email");
+      const tokenRows = await harness.db
         .selectFrom("tokens")
         .selectAll()
         .where("user_id", "=", user!.id)
         .where("kind", "=", "EMAIL_VERIFICATION")
-        .executeTakeFirstOrThrow();
-      expect(tokenRow.used_at).toBeNull();
+        .orderBy("created_at", "desc")
+        .execute();
+      // renewal: newest link live, original invalidated
+      expect(tokenRows).toHaveLength(2);
+      expect(tokenRows[0]!.used_at).toBeNull();
+      expect(tokenRows[1]!.used_at).not.toBeNull();
     });
 
     it("is generic for unknown emails (200, no rows)", async () => {
@@ -296,6 +313,30 @@ describeDb("verification & recovery endpoints", () => {
       }
       expect(statuses).toEqual([200, 200, 200, 429]);
     });
+
+    it("renewal invalidates the previous verification link", async () => {
+      const email = "resend-renew@example.com";
+      const original = (await pendingUser(email)).token;
+      const res = await resend(harness.app, email);
+      expect(res.status).toBe(200);
+
+      const dead = await verifyEmail(harness.app, original);
+      expect(dead.status).toBe(400);
+      expect(dead.body.error.code).toBe("TOKEN_INVALID");
+
+      // The newest link still works.
+      const user = await harness.users.findByEmail(email);
+      const message = await harness.db
+        .selectFrom("email_outbox")
+        .selectAll()
+        .where("recipient", "=", email)
+        .orderBy("id", "desc")
+        .executeTakeFirstOrThrow();
+      const renewedRaw = tokenFromBody(unsealBody(message.body, harness.keys));
+      const ok = await verifyEmail(harness.app, renewedRaw);
+      expect(ok.status).toBe(200);
+      expect(user!.status).toBe("PENDING_VERIFICATION");
+    });
   });
 
   describe("forgot-password", () => {
@@ -310,7 +351,7 @@ describeDb("verification & recovery endpoints", () => {
       await activeUser(email);
       const res = await forgot(harness.app, email);
       expect(res.status).toBe(200);
-      expect(res.body.devEmailLink).toContain("reset-password?token=");
+      expect(res.body).toEqual({}); // §6.1 uniform response — no link echo
       const user = await harness.users.findByEmail(email);
       const message = await harness.db
         .selectFrom("email_outbox")
@@ -365,7 +406,7 @@ describeDb("verification & recovery endpoints", () => {
         .where("recipient", "=", email)
         .orderBy("id", "desc")
         .executeTakeFirstOrThrow();
-      return tokenFromBody(message.body);
+      return tokenFromBody(unsealBody(message.body, harness.keys));
     }
 
     async function activeUser(email: string) {
@@ -458,16 +499,20 @@ describeDb("verification & recovery endpoints", () => {
       expect(res.body.error.code).toBe("INVALID_CREDENTIALS");
     });
 
-    it("changes the password and revokes other sessions", async () => {
+    it("changes the password, revokes all sessions and issues a fresh one", async () => {
       const email = "change-2@example.com";
       const cookieA = await activeSession(email);
       const cookieB = cookieOf(await login(harness.app, email));
       const res = await changePassword(cookieA, PASSWORD, NEW_PASSWORD);
       expect(res.status).toBe(204);
+      const freshCookie = cookieOf(res);
+      expect(freshCookie).not.toBe(cookieA);
       const meA = await request(harness.app).get(`${BASE_URL}/me`).set("Cookie", cookieA);
       const meB = await request(harness.app).get(`${BASE_URL}/me`).set("Cookie", cookieB);
-      expect(meA.status).toBe(200);
+      expect(meA.status).toBe(401);
       expect(meB.status).toBe(401);
+      const meFresh = await request(harness.app).get(`${BASE_URL}/me`).set("Cookie", freshCookie);
+      expect(meFresh.status).toBe(200);
       const oldLogin = await login(harness.app, email, PASSWORD);
       expect(oldLogin.status).toBe(401);
       const newLogin = await login(harness.app, email, NEW_PASSWORD);

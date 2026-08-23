@@ -1,15 +1,13 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { authApi, ApiError, type User } from "./api";
 
-const USER_STORAGE_KEY = "auuth.user";
-
 interface AuthContextValue {
   user: User | null;
   loading: boolean;
-  login(email: string, password: string): Promise<{ user: User } | { mfaRequired: true; mfaToken: string }>;
+  login(email: string, password: string, persistent?: boolean): Promise<{ user: User } | { mfaRequired: true; mfaToken: string }>;
   signup(
     input: { email: string; password: string; firstName?: string; lastName?: string },
-  ): Promise<{ user: User; devEmailLink?: string }>;
+  ): Promise<{ message: string }>;
   logout(): Promise<void>;
   refresh(): Promise<User | null>;
   setUser(user: User | null): void;
@@ -17,26 +15,12 @@ interface AuthContextValue {
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
-function readStoredUser(): User | null {
-  try {
-    const raw = localStorage.getItem(USER_STORAGE_KEY);
-    return raw ? (JSON.parse(raw) as User) : null;
-  } catch {
-    return null;
-  }
-}
-
-export function AuthProvider({ children }: { children: ReactNode }) {
-  const [user, setUserState] = useState<User | null>(() => readStoredUser());
+export function AuthProvider({ children }: { readonly children: ReactNode }) {
+  const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
 
-  const setUser = useCallback((next: User | null) => {
-    setUserState(next);
-    if (next === null) {
-      localStorage.removeItem(USER_STORAGE_KEY);
-    } else {
-      localStorage.setItem(USER_STORAGE_KEY, JSON.stringify(next));
-    }
+  const updateUser = useCallback((next: User | null) => {
+    setUser(next);
   }, []);
 
   useEffect(() => {
@@ -44,10 +28,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     authApi
       .me()
       .then(({ user: current }) => {
-        if (!cancelled) setUser(current);
+        if (!cancelled) updateUser(current);
       })
       .catch(() => {
-        if (!cancelled) setUser(null);
+        if (!cancelled) updateUser(null);
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -55,27 +39,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, [setUser]);
+  }, [updateUser]);
 
   const login = useCallback(
-    async (email: string, password: string) => {
-      const result = await authApi.login({ email, password });
+    async (email: string, password: string, persistent: boolean = true) => {
+      const result = await authApi.login({ email, password, persistent });
       if ("mfaRequired" in result) {
         return result;
       }
-      setUser(result.user);
+      updateUser(result.user);
       return result;
     },
-    [setUser],
+    [updateUser],
   );
 
   const signup = useCallback(
     async (input: { email: string; password: string; firstName?: string; lastName?: string }) => {
       const result = await authApi.signup(input);
-      setUser(result.user);
       return result;
     },
-    [setUser],
+    [],
   );
 
   const logout = useCallback(async () => {
@@ -86,19 +69,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         throw error;
       }
     }
-    setUser(null);
-  }, [setUser]);
+    updateUser(null);
+  }, [updateUser]);
 
   const refresh = useCallback(async () => {
     try {
       const { user: current } = await authApi.me();
-      setUser(current);
+      updateUser(current);
       return current;
     } catch {
-      setUser(null);
+      updateUser(null);
       return null;
     }
-  }, [setUser]);
+  }, [updateUser]);
 
   const value = useMemo<AuthContextValue>(
     () => ({ user, loading, login, signup, logout, refresh, setUser }),

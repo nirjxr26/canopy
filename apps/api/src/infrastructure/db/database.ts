@@ -1,5 +1,5 @@
 import pg from "pg";
-import { Kysely, PostgresDialect, sql, type ColumnType } from "kysely";
+import { Kysely, PostgresDialect, sql, type ColumnType, type Generated, type Transaction } from "kysely";
 import type { UserStatus } from "../../shared/user-status.js";
 import type { Config } from "../config/config.js";
 
@@ -58,6 +58,7 @@ export interface TokensTable {
   expires_at: Date;
   used_at: Date | null;
   created_at: ColumnType<Date, never, never>;
+  mfa_failed_attempts: Generated<number>;
   metadata: ColumnType<Record<string, unknown>, Record<string, unknown>, Record<string, unknown>>;
 }
 
@@ -84,6 +85,10 @@ export interface EmailOutboxTable {
   next_attempt_at: Date;
   sent_at: Date | null;
   created_at: ColumnType<Date, never, never>;
+  status: string;
+  locked_until: Date | null;
+  worker_id: string | null;
+  message_id: string;
 }
 
 export interface Database {
@@ -96,7 +101,13 @@ export interface Database {
   email_outbox: EmailOutboxTable;
 }
 
-export function createDb(config: Pick<Config, "databaseUrl" | "dbPoolMin" | "dbPoolMax">): {
+export type DbExecutor = Kysely<Database> | Transaction<Database>;
+
+export function createDb(
+  config: Pick<Config, "databaseUrl" | "dbPoolMin" | "dbPoolMax">,
+  onError: (err: Error) => void = (err) => console.error("idle postgres client error:", err.message),
+  opts?: { statementTimeoutMs?: number },
+): {
   pool: pg.Pool;
   db: Kysely<Database>;
 } {
@@ -105,8 +116,10 @@ export function createDb(config: Pick<Config, "databaseUrl" | "dbPoolMin" | "dbP
     min: config.dbPoolMin,
     max: config.dbPoolMax,
     connectionTimeoutMillis: 5_000,
-    statement_timeout: 5_000,
+    statement_timeout: opts?.statementTimeoutMs ?? 5_000,
   });
+  // Without this handler an idle-client failure emits an unhandled 'error' event and crashes the process.
+  pool.on("error", onError);
   const db = new Kysely<Database>({
     dialect: new PostgresDialect({ pool }),
   });

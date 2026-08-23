@@ -1,5 +1,5 @@
 import type { Kysely, Selectable } from "kysely";
-import type { Database, SessionsTable } from "../../infrastructure/db/database.js";
+import type { Database, DbExecutor, SessionsTable } from "../../infrastructure/db/database.js";
 
 type SessionRow = Selectable<SessionsTable>;
 
@@ -31,6 +31,7 @@ export interface SessionRepository {
   revokeAll(userId: string): Promise<number>;
   revokeAllExcept(userId: string, keepId: string): Promise<number>;
   listByUser(userId: string): Promise<SessionRecord[]>;
+  pruneExcess(userId: string, keepCount: number): Promise<void>;
 }
 
 function toSessionRecord(row: SessionRow): SessionRecord {
@@ -46,7 +47,7 @@ function toSessionRecord(row: SessionRow): SessionRecord {
   };
 }
 
-export function createSessionRepository(db: Kysely<Database>): SessionRepository {
+export function createSessionRepository(db: Kysely<Database> | DbExecutor): SessionRepository {
   return {
     async insert(session) {
       const row = await db
@@ -123,6 +124,23 @@ export function createSessionRepository(db: Kysely<Database>): SessionRepository
         .orderBy("created_at", "desc")
         .execute();
       return rows.map(toSessionRecord);
+    },
+
+    async pruneExcess(userId, keepCount) {
+      await db
+        .deleteFrom("sessions")
+        .where("user_id", "=", userId)
+        .where("revoked_at", "is", null)
+        .where("id", "in", (qb) =>
+          qb
+            .selectFrom("sessions")
+            .select("id")
+            .where("user_id", "=", userId)
+            .where("revoked_at", "is", null)
+            .orderBy("created_at", "desc")
+            .offset(keepCount),
+        )
+        .execute();
     },
   };
 }

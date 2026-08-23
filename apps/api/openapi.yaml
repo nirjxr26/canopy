@@ -1,0 +1,747 @@
+# Contract-testing notes (npm run test:contract against :3001):
+# - Scope: unauthenticated surface + X-Service-Key (introspect). Session-cookie
+#   operations are covered by e2e, so "missing_auth" warnings are suppressed.
+# - "validation_mismatch" warnings are suppressed by design: token/credential
+#   validation is server-side (crypto), so generated garbage is correctly rejected
+#   and anti-enumeration endpoints accept any input.
+openapi: "3.1.0"
+info:
+  title: auuth Authentication API
+  description: Authentication API for the auuth platform (v1)
+  version: "1.0.0"
+  contact:
+    name: auuth API
+  license:
+    name: MIT
+
+servers:
+  - url: http://localhost:3000
+    description: Local development server
+
+paths:
+  /healthz:
+    get:
+      summary: Health check
+      operationId: healthCheck
+      responses:
+        "200":
+          description: Service healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [ok]
+                  db:
+                    type: string
+                    enum: [up]
+        "503":
+          description: Database unreachable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /.well-known/jwks.json:
+    get:
+      summary: Retrieve JWKS (JSON Web Key Set)
+      operationId: getJwks
+      responses:
+        "200":
+          description: JWKS document
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Jwks"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /api/v1/auth/signup:
+    post:
+      summary: Register a new account
+      operationId: signup
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email:
+                  type: string
+                  format: email
+                password:
+                  type: string
+                  minLength: 12
+                  maxLength: 128
+                  pattern: '(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9]).*'
+                firstName:
+                  type: string
+                lastName:
+                  type: string
+      responses:
+        "201":
+          description: Account created (email verification sent)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [user]
+                properties:
+                  user:
+                    $ref: "#/components/schemas/User"
+                  devEmailLink:
+                    type: string
+                    description: Dev-only verification link (console email provider)
+        "400":
+          $ref: "#/components/responses/ErrorResponse"
+        "409":
+          description: Email already registered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /api/v1/auth/login:
+    post:
+      summary: Authenticate with email and password
+      operationId: login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email:
+                  type: string
+                  format: email
+                password:
+                  type: string
+                persistent:
+                  type: boolean
+                  default: true
+      responses:
+        "200":
+          description: Authenticated (or MFA challenge required)
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - type: object
+                    required: [user]
+                    properties:
+                      user:
+                        $ref: "#/components/schemas/User"
+                  - type: object
+                    required: [mfaRequired, mfaToken]
+                    properties:
+                      mfaRequired:
+                        type: boolean
+                        enum: [true]
+                      mfaToken:
+                        type: string
+                        description: Challenge token for /auth/verify
+        "401":
+          description: Invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "400":
+          $ref: "#/components/responses/ErrorResponse"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /api/v1/auth/logout:
+    post:
+      summary: End the current session
+      operationId: logout
+      security:
+        - sessionCookie: []
+      responses:
+        "204":
+          description: Logged out
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /api/v1/auth/me:
+    get:
+      summary: Get the current user profile
+      operationId: getMe
+      security:
+        - sessionCookie: []
+      responses:
+        "200":
+          description: User profile
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [user]
+                properties:
+                  user:
+                    $ref: "#/components/schemas/User"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /api/v1/auth/change-password:
+    post:
+      summary: Change password (re-authenticated with current password)
+      operationId: changePassword
+      security:
+        - sessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [currentPassword, newPassword]
+              properties:
+                currentPassword:
+                  type: string
+                newPassword:
+                  type: string
+                  minLength: 12
+                  maxLength: 128
+                  pattern: '(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9]).*'
+      responses:
+        "204":
+          description: Password changed (other sessions revoked)
+        "400":
+          $ref: "#/components/responses/ErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /api/v1/auth/introspect:
+    post:
+      summary: Introspect a session secret (service-to-service)
+      operationId: introspectSession
+      security:
+        - serviceKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                sessionSecret:
+                  type: string
+      responses:
+        "200":
+          description: Session validity
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [valid]
+                properties:
+                  valid:
+                    type: boolean
+                  userId:
+                    type: string
+                  email:
+                    type: string
+                  emailVerified:
+                    type: boolean
+                  expiresAt:
+                    type: string
+                    format: date-time
+        "401":
+          description: Invalid service key
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "400":
+          $ref: "#/components/responses/ErrorResponse"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /api/v1/auth/verify-email:
+    post:
+      summary: Verify email address with emailed token
+      operationId: verifyEmail
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token:
+                  type: string
+      responses:
+        "200":
+          description: Email verified
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [user]
+                properties:
+                  user:
+                    $ref: "#/components/schemas/User"
+        "400":
+          $ref: "#/components/responses/ErrorResponse"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /api/v1/auth/resend-verification:
+    post:
+      summary: Re-send the email verification message
+      operationId: resendVerification
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email:
+                  type: string
+                  description: Accepted as-is; responses are identical for all inputs (anti-enumeration)
+      responses:
+        "200":
+          description: Accepted (no-op for unknown or already-active accounts)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  devEmailLink:
+                    type: string
+        "400":
+          $ref: "#/components/responses/ErrorResponse"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /api/v1/auth/forgot-password:
+    post:
+      summary: Request a password reset email
+      operationId: forgotPassword
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email:
+                  type: string
+                  description: Accepted as-is; responses are identical for all inputs (anti-enumeration)
+      responses:
+        "200":
+          description: Accepted (identical for unknown emails - anti-enumeration)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  devEmailLink:
+                    type: string
+        "400":
+          $ref: "#/components/responses/ErrorResponse"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /api/v1/auth/reset-password:
+    post:
+      summary: Reset password with emailed token
+      operationId: resetPassword
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, newPassword]
+              properties:
+                token:
+                  type: string
+                newPassword:
+                  type: string
+                  minLength: 12
+                  maxLength: 128
+                  pattern: '(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9]).*'
+      responses:
+        "200":
+          description: Password reset
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [user]
+                properties:
+                  user:
+                    $ref: "#/components/schemas/User"
+        "400":
+          $ref: "#/components/responses/ErrorResponse"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /api/v1/auth/enroll:
+    post:
+      summary: Start MFA enrollment (server-bound secret)
+      operationId: mfaEnroll
+      security:
+        - sessionCookie: []
+      responses:
+        "200":
+          description: Enrollment challenge created (secret is stored server-side)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [challenge, secret, otpauthUrl]
+                properties:
+                  challenge:
+                    type: string
+                    description: Enrollment challenge token for /auth/confirm
+                  secret:
+                    type: string
+                    description: Base32 TOTP secret (display only, ignored on confirm)
+                  otpauthUrl:
+                    type: string
+        "400":
+          $ref: "#/components/responses/ErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /api/v1/auth/confirm:
+    post:
+      summary: Confirm MFA enrollment with the challenge and a TOTP code
+      operationId: mfaConfirm
+      security:
+        - sessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [challenge, code]
+              properties:
+                challenge:
+                  type: string
+                code:
+                  type: string
+                  description: 6-digit TOTP code
+      responses:
+        "200":
+          description: MFA enabled
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [recoveryCodes]
+                properties:
+                  recoveryCodes:
+                    type: array
+                    items:
+                      type: string
+        "400":
+          $ref: "#/components/responses/ErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /api/v1/auth/verify:
+    post:
+      summary: Complete the MFA challenge during login
+      operationId: mfaVerify
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [mfaToken, code]
+              properties:
+                mfaToken:
+                  type: string
+                  description: Challenge token from /auth/login
+                code:
+                  type: string
+                  description: 6-digit TOTP code or recovery code
+      responses:
+        "200":
+          description: Authenticated (session cookie set)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [user]
+                properties:
+                  user:
+                    $ref: "#/components/schemas/User"
+        "400":
+          $ref: "#/components/responses/ErrorResponse"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /api/v1/auth/disable:
+    post:
+      summary: Disable MFA (re-authenticated with current password and code)
+      operationId: mfaDisable
+      security:
+        - sessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [currentPassword, code]
+              properties:
+                currentPassword:
+                  type: string
+                code:
+                  type: string
+                  description: 6-digit TOTP code or recovery code
+      responses:
+        "204":
+          description: MFA disabled (other sessions revoked)
+        "400":
+          $ref: "#/components/responses/ErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /api/v1/auth/tokens:
+    post:
+      summary: Mint a short-lived RS256 JWT for the current session
+      operationId: mintJwt
+      security:
+        - sessionCookie: []
+      responses:
+        "200":
+          description: JWT minted
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [accessToken, expiresIn, tokenType, expiresAt]
+                properties:
+                  accessToken:
+                    type: string
+                  expiresIn:
+                    type: integer
+                  tokenType:
+                    type: string
+                    enum: [Bearer]
+                  expiresAt:
+                    type: string
+                    format: date-time
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /api/v1/auth/sessions:
+    get:
+      summary: List the current user's sessions
+      operationId: listSessions
+      security:
+        - sessionCookie: []
+      responses:
+        "200":
+          description: Active sessions
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [sessions]
+                properties:
+                  sessions:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Session"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /api/v1/auth/sessions/{id}:
+    delete:
+      summary: Revoke a session
+      operationId: revokeSession
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Session revoked
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          description: Session not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /api/v1/auth/sessions/revoke-all:
+    post:
+      summary: Revoke all of the current user's sessions
+      operationId: revokeAllSessions
+      security:
+        - sessionCookie: []
+      responses:
+        "204":
+          description: All sessions revoked
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: ap_session
+    serviceKey:
+      type: apiKey
+      in: header
+      name: X-Service-Key
+  responses:
+    ErrorResponse:
+      description: Invalid or rejected request
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unauthenticated:
+      description: Missing or invalid session
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    RateLimited:
+      description: Too many requests
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: Error code (e.g. VALIDATION, INVALID_CREDENTIALS, TOKEN_INVALID, RATE_LIMITED, UNAUTHENTICATED)
+            message:
+              type: string
+            retryAfterMs:
+              type: integer
+              description: Present on RATE_LIMITED responses
+    User:
+      type: object
+      required: [id, email, emailVerified, status]
+      properties:
+        id:
+          type: string
+          description: User ULID (usr_...)
+        email:
+          type: string
+          format: email
+        firstName:
+          type: string
+          nullable: true
+        lastName:
+          type: string
+          nullable: true
+        emailVerified:
+          type: boolean
+        status:
+          type: string
+          enum: [PENDING_VERIFICATION, ACTIVE, LOCKED, DEACTIVATED, SUSPENDED]
+        mfaEnabled:
+          type: boolean
+        lastLoginAt:
+          type: string
+          format: date-time
+          nullable: true
+    Session:
+      type: object
+      required: [id, ipAddress, userAgent, createdAt, expiresAt, lastUsedAt, isCurrent]
+      properties:
+        id:
+          type: string
+        ipAddress:
+          type: string
+        userAgent:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        expiresAt:
+          type: string
+          format: date-time
+        lastUsedAt:
+          type: string
+          format: date-time
+        isCurrent:
+          type: boolean
+    Jwks:
+      type: object
+      required: [keys]
+      properties:
+        keys:
+          type: array
+          items:
+            type: object
+            required: [kty, use, alg, kid, n, e]
+            properties:
+              kty:
+                type: string
+                enum: [RSA]
+              use:
+                type: string
+                enum: [sig]
+              alg:
+                type: string
+                enum: [RS256]
+              kid:
+                type: string
+              n:
+                type: string
+                description: Modulus (base64url)
+              e:
+                type: string
+                description: Exponent (base64url)

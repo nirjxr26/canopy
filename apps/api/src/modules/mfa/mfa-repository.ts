@@ -1,5 +1,5 @@
 import type { Kysely } from "kysely";
-import type { Database } from "../../infrastructure/db/database.js";
+import type { Database, DbExecutor } from "../../infrastructure/db/database.js";
 import { createId } from "../../infrastructure/crypto/ulid.js";
 
 export interface MfaCredential {
@@ -13,12 +13,17 @@ export interface MfaCredential {
 
 export interface MfaRepository {
   findEnabledByUser(userId: string): Promise<MfaCredential | null>;
-  insertCredential(input: {
+  /** Pending enrollment: a row with enabled_at = NULL (spec §4). */
+  findPendingByUser(userId: string): Promise<MfaCredential | null>;
+  /** Insert-or-replace the pending enrollment (UNIQUE(user_id, method)). */
+  upsertPending(input: {
     userId: string;
     method: string;
     secretEncrypted: string;
     keyVersion: number;
   }): Promise<void>;
+  /** Atomically flip the pending enrollment to enabled. */
+  enablePending(userId: string, method: string, now: Date): Promise<boolean>;
   updateSecret(
     userId: string,
     method: string,
@@ -30,7 +35,7 @@ export interface MfaRepository {
   deleteRecoveryCodes(userId: string): Promise<void>;
 }
 
-export function createMfaRepository(db: Kysely<Database>): MfaRepository {
+export function createMfaRepository(db: Kysely<Database> | DbExecutor): MfaRepository {
   return {
     async findEnabledByUser(userId) {
       const row = await db
@@ -53,7 +58,28 @@ export function createMfaRepository(db: Kysely<Database>): MfaRepository {
       };
     },
 
-    async insertCredential(input) {
+    async findPendingByUser(userId) {
+      const row = await db
+        .selectFrom("mfa_credentials")
+        .select(["id", "user_id", "method", "secret_encrypted", "key_version", "enabled_at"])
+        .where("user_id", "=", userId)
+        .where("enabled_at", "is", null)
+        .where("method", "=", "totp")
+        .executeTakeFirst();
+      if (!row) {
+        return null;
+      }
+      return {
+        id: row.id,
+        userId: row.user_id,
+        method: row.method,
+        secretEncrypted: row.secret_encrypted,
+        keyVersion: row.key_version,
+        enabledAt: row.enabled_at,
+      };
+    },
+
+    async upsertPending(input) {
       await db
         .insertInto("mfa_credentials")
         .values({
@@ -62,9 +88,28 @@ export function createMfaRepository(db: Kysely<Database>): MfaRepository {
           method: input.method,
           secret_encrypted: input.secretEncrypted,
           key_version: input.keyVersion,
-          enabled_at: new Date(),
+          enabled_at: null,
         })
+        .onConflict((oc) =>
+          oc.columns(["user_id", "method"]).doUpdateSet({
+            secret_encrypted: input.secretEncrypted,
+            key_version: input.keyVersion,
+            enabled_at: null,
+          }),
+        )
         .execute();
+    },
+
+    async enablePending(userId, method, now) {
+      const rows = await db
+        .updateTable("mfa_credentials")
+        .set({ enabled_at: now })
+        .where("user_id", "=", userId)
+        .where("method", "=", method)
+        .where("enabled_at", "is", null)
+        .returning("id")
+        .execute();
+      return rows.length > 0;
     },
 
     async updateSecret(userId, method, patch) {

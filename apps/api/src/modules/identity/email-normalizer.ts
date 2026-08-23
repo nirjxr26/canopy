@@ -10,7 +10,8 @@ export function normalizeEmail(raw: string): string {
     throw new AppError(ERROR_CODES.VALIDATION, "invalid email: missing or misplaced @");
   }
   const local = trimmed.slice(0, at).toLowerCase();
-  let domain = trimmed.slice(at + 1).trim().toLowerCase().replace(/\.+$/, "");
+  let domain = trimmed.slice(at + 1).trim().toLowerCase();
+  while (domain.endsWith(".")) domain = domain.slice(0, -1);
   try {
     domain = domainToASCII(domain);
   } catch {

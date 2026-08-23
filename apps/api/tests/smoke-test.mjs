@@ -4,7 +4,10 @@ import { createHmac } from "node:crypto";
 
 const BASE = "http://localhost:3000";
 const DB_URL = process.env.DATABASE_URL ?? "postgres://postgres:postgres@localhost:5432/auuth";
-const PASSWORD = "correct-horse-battery-staple-1";
+const PASSWORD = process.env.SMOKE_TEST_PASSWORD;
+if (!PASSWORD) {
+  throw new Error("SMOKE_TEST_PASSWORD environment variable is required");
+}
 const ts = Date.now();
 const EMAIL1 = `smoke-mfa-${ts}@example.com`;
 const EMAIL2 = `smoke-nomfa-${ts}@example.com`;
@@ -36,8 +39,14 @@ function req(method, path, body, cookie) {
 }
 
 function assert(name, cond, detail) {
-  if (cond) { console.log(`  ✓ ${name}`); passed++; }
-  else { console.log(`  ✗ ${name}${detail ? ` — ${detail}` : ""}`); failed++; }
+  if (cond) {
+    console.log(`  ✓ ${name}`);
+    passed++;
+  } else {
+    const message = detail ? ` — ${detail}` : "";
+    console.log(`  ✗ ${name}${message}`);
+    failed++;
+  }
 }
 
 async function main() {
@@ -53,7 +62,7 @@ async function main() {
   }
 
   // Helper: get recovery codes from confirm response
-  let recoveryCodes = [];
+  let recoveryCodes;
 
   try {
     // ─── 1. Health ───
@@ -111,24 +120,19 @@ async function main() {
     assert("confirm bad code returns 400", confirmBad.status === 400, `got ${confirmBad.status}`);
     assert("error is MFA_INVALID", confirmBad.body?.error?.code === "MFA_INVALID", `got ${confirmBad.body?.error?.code}`);
 
-    // Get the TOTP code via direct import — we'll use a Node script for this
-    // Since we can't import TS modules from .mjs, we'll query the secret and generate the code via the API
-    // Actually, let's use a different approach: create a small helper that generates TOTP
-    const crypto = await import("node:crypto");
-
     // TOTP generation (RFC 6238 compatible)
     // Secret is base32-encoded. Decode it.
     function base32Decode(str) {
       const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
       let bits = "";
-      for (const c of str.toUpperCase().replace(/=/g, "")) {
+      for (const c of str.toUpperCase().replaceAll("=", "")) {
         const val = alphabet.indexOf(c);
         if (val === -1) throw new Error(`Invalid base32 char: ${c}`);
         bits += val.toString(2).padStart(5, "0");
       }
       const bytes = new Uint8Array(Math.floor(bits.length / 8));
       for (let i = 0; i < bytes.length; i++) {
-        bytes[i] = parseInt(bits.slice(i * 8, i * 8 + 8), 2);
+        bytes[i] = Number.parseInt(bits.slice(i * 8, i * 8 + 8), 2);
       }
       return bytes;
     }
@@ -141,7 +145,7 @@ async function main() {
       buf.writeUInt32BE(counter, 4);
       const key = base32Decode(secret);
       const hmac = createHmac("sha1", key).update(buf).digest();
-      const offset = hmac[hmac.length - 1] & 0x0f;
+      const offset = hmac.at(-1) & 0x0f;
       const code = ((hmac[offset] & 0x7f) << 24 | (hmac[offset + 1] & 0xff) << 16 | (hmac[offset + 2] & 0xff) << 8 | (hmac[offset + 3] & 0xff)) % 1000000;
       return code.toString().padStart(6, "0");
     }
@@ -218,10 +222,10 @@ async function main() {
     const verifyForSession = await req("POST", "/api/v1/auth/verify", { mfaToken: loginMfa5.body.mfaToken, code: totpCode3 });
     assert("got session for disable", verifyForSession.status === 200, `got ${verifyForSession.status}`);
 
-    const disableBad = await req("POST", "/api/v1/auth/disable", { code: "000000" }, verifyForSession.cookie);
+    const disableBad = await req("POST", "/api/v1/auth/disable", { currentPassword: PASSWORD, code: "000000" }, verifyForSession.cookie);
     assert("disable wrong code 400", disableBad.status === 400, `got ${disableBad.status}`);
 
-    const disableGood = await req("POST", "/api/v1/auth/disable", { code: totpCode3 }, verifyForSession.cookie);
+    const disableGood = await req("POST", "/api/v1/auth/disable", { currentPassword: PASSWORD, code: totpCode3 }, verifyForSession.cookie);
     assert("disable correct code 204", disableGood.status === 204, `got ${disableGood.status}`);
 
     // ─── 18. After disable, login no longer requires MFA ───
@@ -267,4 +271,9 @@ async function main() {
   process.exit(failed > 0 ? 1 : 0);
 }
 
-main().catch((e) => { console.error(e); process.exit(1); });
+try {
+  await main();
+} catch (e) {
+  console.error(e);
+  process.exit(1);
+}

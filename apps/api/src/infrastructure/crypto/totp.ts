@@ -24,7 +24,11 @@ function base32Encode(buf: Buffer): string {
 }
 
 function base32Decode(input: string): Buffer {
-  const cleaned = input.toUpperCase().replace(/=+$/, "");
+  if (typeof input !== "string" || !input) return Buffer.alloc(0);
+  let cleaned = input.toUpperCase();
+  while (cleaned.endsWith("=")) {
+    cleaned = cleaned.slice(0, -1);
+  }
   const bytes: number[] = [];
   let bits = 0;
   let value = 0;
@@ -47,7 +51,7 @@ function totpAt(secret: string, counter: number): string {
   const counterBuf = Buffer.alloc(8);
   counterBuf.writeBigUInt64BE(BigInt(counter));
   const hmac = createHmac("sha1", base32Decode(secret)).update(counterBuf).digest();
-  const offset = hmac[hmac.length - 1]! & 0x0f;
+  const offset = hmac.at(-1)! & 0x0f;
   const binary = (hmac.readUInt32BE(offset) & 0x7fffffff) % 10 ** DIGITS;
   return binary.toString().padStart(DIGITS, "0");
 }

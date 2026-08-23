@@ -68,16 +68,13 @@ export function createPasswordHasher(params: Argon2Params): PasswordHasher {
   let dummyHashPromise: Promise<string> | undefined;
 
   function dummyHash(): Promise<string> {
-    if (dummyHashPromise === undefined) {
-      dummyHashPromise = argon2Hash("auuth-dummy-password", hashOptions).then(
-        (value) => value,
-        (err: unknown) => {
-          dummyHashPromise = undefined;
-          throw err;
-        },
-      );
+    const existing = dummyHashPromise;
+    if (existing !== undefined) {
+      return existing;
     }
-    return dummyHashPromise;
+    const computed = argon2Hash("auuth-dummy-password", hashOptions);
+    dummyHashPromise = computed;
+    return computed;
   }
 
   return { hash, verify, needsRehash, rehashIfNeeded, dummyHash };

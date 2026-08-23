@@ -1,9 +1,32 @@
+# Dependencies
 node_modules/
+
+# IDE / Editor
+.vscode/
+
+# Documentation
+docs/
+
+# Build / Generated Output
 dist/
+.vite/
 coverage/
+test-results/
+playwright-report/
+
+# Environment / Secrets
 .env
 .env.*
 !.env.example
+
+# Logs / Temporary Files
 *.log
 .DS_Store
-.vite/
+
+# Tool / Agent Data
+.agents/
+.sonar/
+
+# local-only spec/status artifacts (removed from history by request)
+ARCHITECTURE.md
+MFA_FEATURE_REPORT.md
