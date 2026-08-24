@@ -157,7 +157,7 @@ describe("config", () => {
       EMAIL_PROVIDER: "smtp",
       SMTP_URL: "smtps://user:pass@smtp.example.com:465",
       RATE_LIMITER_BACKEND: "redis",
-      SERVICE_API_KEY: "0123456789abcdef",
+      SERVICE_API_KEYS: "0123456789abcdef,fedcba9876543210",
       JWT_PRIVATE_KEY: "0123456789abcdef0123456789abcdef",
       JWT_KID: "prod-key-1",
     };
@@ -177,7 +177,21 @@ describe("config", () => {
     });
 
   it("refuses to start with short service key in prod", () => {
-    expect(() => load({ ...HARDENED, SERVICE_API_KEY: "short" })).toThrow(/SERVICE_API_KEY/);
+    expect(() => load({ ...HARDENED, SERVICE_API_KEYS: "short" })).toThrow(/SERVICE_API_KEYS/);
+  });
+
+  it("defaults breached-password checker to hibp in prod and local otherwise", () => {
+    const prod = load(HARDENED);
+    expect(prod.breachedPasswordCheckerMode).toBe("hibp");
+    const dev = load({ ...HARDENED, NODE_ENV: "development" });
+    expect(dev.breachedPasswordCheckerMode).toBe("local");
+    const forcedLocal = load({ ...HARDENED, BREACHED_PASSWORD_CHECKER: "local" });
+    expect(forcedLocal.breachedPasswordCheckerMode).toBe("local");
+  });
+
+  it("refuses to start without any service keys in prod", () => {
+    const { SERVICE_API_KEYS: _removed, ...rest } = HARDENED;
+    expect(() => load(rest)).toThrow(/SERVICE_API_KEYS/);
   });
 
   it("refuses to start without JWT_KID in prod", () => {

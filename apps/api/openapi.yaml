@@ -30,19 +30,32 @@ paths:
             application/json:
               schema:
                 type: object
+                required: [status, db]
                 properties:
                   status:
                     type: string
-                    enum: [ok]
+                    enum: [ok, degraded]
                   db:
                     type: string
-                    enum: [up]
+                    enum: [up, down]
+                  redis:
+                    type: string
+                    enum: [up, down]
+                    description: Present only when the rate-limiter backend is redis.
         "503":
-          description: Database unreachable
+          description: A dependency is unreachable
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Error"
+                type: object
+                required: [status, db]
+                properties:
+                  status:
+                    type: string
+                    enum: [degraded]
+                  db:
+                    type: string
+                    enum: [down]
 
   /.well-known/jwks.json:
     get:
@@ -77,33 +90,28 @@ paths:
                   type: string
                   minLength: 12
                   maxLength: 128
-                  pattern: '(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9]).*'
                 firstName:
                   type: string
                 lastName:
                   type: string
       responses:
         "201":
-          description: Account created (email verification sent)
+          description: |
+            Account processed. Uniform by design (anti-enumeration): identical body
+            whether the account was created, already existed, or a verification link
+            was renewed. Distinction is only in the platform's security-event log.
           content:
             application/json:
               schema:
                 type: object
-                required: [user]
+                required: [message]
                 properties:
-                  user:
-                    $ref: "#/components/schemas/User"
-                  devEmailLink:
+                  message:
                     type: string
-                    description: Dev-only verification link (console email provider)
         "400":
           $ref: "#/components/responses/ErrorResponse"
-        "409":
-          description: Email already registered
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
+        "403":
+          $ref: "#/components/responses/InvalidOrigin"
         "429":
           $ref: "#/components/responses/RateLimited"
 
@@ -195,6 +203,47 @@ paths:
         "429":
           $ref: "#/components/responses/RateLimited"
 
+  /api/v1/auth/me:
+    patch:
+      summary: Update profile names
+      operationId: updateMe
+      security:
+        - sessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                firstName:
+                  type: string
+                  nullable: true
+                  maxLength: 200
+                lastName:
+                  type: string
+                  nullable: true
+                  maxLength: 200
+      responses:
+        "200":
+          description: Updated user
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [user]
+                properties:
+                  user:
+                    $ref: "#/components/schemas/User"
+        "400":
+          $ref: "#/components/responses/ErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/InvalidOrigin"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
   /api/v1/auth/change-password:
     post:
       summary: Change password (re-authenticated with current password)
@@ -215,10 +264,11 @@ paths:
                   type: string
                   minLength: 12
                   maxLength: 128
-                  pattern: '(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9]).*'
       responses:
         "204":
-          description: Password changed (other sessions revoked)
+          description: >-
+            Password changed. All previous sessions were revoked and a fresh session
+            cookie is set on this response. A security notification email is queued.
         "400":
           $ref: "#/components/responses/ErrorResponse"
         "401":
@@ -252,6 +302,9 @@ paths:
                 properties:
                   valid:
                     type: boolean
+                  status:
+                    type: string
+                    description: Account status snapshot at validation time
                   userId:
                     type: string
                   email:
@@ -319,14 +372,12 @@ paths:
                   description: Accepted as-is; responses are identical for all inputs (anti-enumeration)
       responses:
         "200":
-          description: Accepted (no-op for unknown or already-active accounts)
+          description: Accepted (no-op for unknown or already-active accounts) — uniform body
           content:
             application/json:
               schema:
                 type: object
-                properties:
-                  devEmailLink:
-                    type: string
+                maxProperties: 0
         "400":
           $ref: "#/components/responses/ErrorResponse"
         "429":
@@ -349,14 +400,12 @@ paths:
                   description: Accepted as-is; responses are identical for all inputs (anti-enumeration)
       responses:
         "200":
-          description: Accepted (identical for unknown emails - anti-enumeration)
+          description: Accepted (identical for unknown emails - anti-enumeration) — uniform body
           content:
             application/json:
               schema:
                 type: object
-                properties:
-                  devEmailLink:
-                    type: string
+                maxProperties: 0
         "400":
           $ref: "#/components/responses/ErrorResponse"
         "429":
@@ -380,7 +429,6 @@ paths:
                   type: string
                   minLength: 12
                   maxLength: 128
-                  pattern: '(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9]).*'
       responses:
         "200":
           description: Password reset
@@ -405,16 +453,13 @@ paths:
         - sessionCookie: []
       responses:
         "200":
-          description: Enrollment challenge created (secret is stored server-side)
+          description: Pending enrollment stored server-side (replaces any prior pending secret)
           content:
             application/json:
               schema:
                 type: object
-                required: [challenge, secret, otpauthUrl]
+                required: [secret, otpauthUrl]
                 properties:
-                  challenge:
-                    type: string
-                    description: Enrollment challenge token for /auth/confirm
                   secret:
                     type: string
                     description: Base32 TOTP secret (display only, ignored on confirm)
@@ -429,7 +474,7 @@ paths:
 
   /api/v1/auth/confirm:
     post:
-      summary: Confirm MFA enrollment with the challenge and a TOTP code
+      summary: Confirm pending enrollment with a TOTP code
       operationId: mfaConfirm
       security:
         - sessionCookie: []
@@ -439,9 +484,9 @@ paths:
           application/json:
             schema:
               type: object
-              required: [challenge, code]
+              required: [code]
               properties:
-                challenge:
+                code:
                   type: string
                 code:
                   type: string
@@ -609,6 +654,45 @@ paths:
         "429":
           $ref: "#/components/responses/RateLimited"
 
+  /api/v1/auth/recovery-codes/regenerate:
+    post:
+      summary: Regenerate recovery codes (invalidates existing codes)
+      operationId: regenerateRecoveryCodes
+      security:
+        - sessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code:
+                  type: string
+                  description: Current TOTP code
+      responses:
+        "200":
+          description: New recovery codes (shown once)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [recoveryCodes]
+                properties:
+                  recoveryCodes:
+                    type: array
+                    items:
+                      type: string
+        "400":
+          $ref: "#/components/responses/ErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/InvalidOrigin"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
   /api/v1/auth/sessions/revoke-all:
     post:
       summary: Revoke all of the current user's sessions
@@ -628,6 +712,9 @@ components:
     sessionCookie:
       type: apiKey
       in: cookie
+      description: >-
+        `ap_session` over plain HTTP (development); `__Host-ap_session` when
+        COOKIE_SECURE=true (production).
       name: ap_session
     serviceKey:
       type: apiKey
@@ -646,8 +733,21 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
+    InvalidOrigin:
+      description: >-
+        Fail-closed CSRF check: the request is state-changing and its Origin/Referer
+        is missing or not allow-listed.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
     RateLimited:
-      description: Too many requests
+      description: Too many requests. Includes a Retry-After response header (seconds).
+      headers:
+        Retry-After:
+          description: Seconds until the caller may retry.
+          schema:
+            type: integer
       content:
         application/json:
           schema:
@@ -666,9 +766,8 @@ components:
               description: Error code (e.g. VALIDATION, INVALID_CREDENTIALS, TOKEN_INVALID, RATE_LIMITED, UNAUTHENTICATED)
             message:
               type: string
-            retryAfterMs:
-              type: integer
-              description: Present on RATE_LIMITED responses
+          description: >-
+            RATE_LIMITED responses also carry a Retry-After header (seconds).
     User:
       type: object
       required: [id, email, emailVerified, status]

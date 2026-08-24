@@ -1,5 +1,7 @@
 import express from "express";
 import helmet from "helmet";
+import { existsSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { pinoHttp } from "pino-http";
 import type pino from "pino";
 import type { Kysely } from "kysely";
@@ -144,10 +146,10 @@ export function createApp(deps: AppDeps): express.Express {
     },
   );
 
-  app.use("/", createHealthRouter(db));
+  app.use("/", createHealthRouter(db, limiter));
   app.use(
     "/api/v1/auth",
-    createAuthRouter({ config, hasher, limiter, sessions, users, tokens, flows, mfa, securityEvents }),
+    createAuthRouter({ config, hasher, limiter, sessions, users, tokens, flows, mfa, emails, securityEvents }),
   );
   app.use(
     "/api/v1/auth",
@@ -155,13 +157,40 @@ export function createApp(deps: AppDeps): express.Express {
   );
   app.use(
     "/api/v1/auth",
-    createMfaRouter({ config, hasher, limiter, sessions, users, tokens, mfa, securityEvents }),
+    createMfaRouter({ config, hasher, limiter, sessions, users, tokens, emails, mfa, securityEvents }),
   );
   app.use(
     "/api/v1/auth/sessions/revoke-all",
     createSessionsAllRouter({ config, limiter, sessions, securityEvents }),
   );
   app.use("/api/v1/auth/sessions", createSessionsRouter({ config, limiter, sessions, securityEvents }));
+
+  // D4: production SPA serving (§9) — same-origin keeps the SameSite=Strict
+  // CSRF posture. Mounted AFTER all API routes so it never shadows them.
+  if (config.webDistDir !== undefined) {
+    const distDir = resolve(process.cwd(), config.webDistDir);
+    if (existsSync(distDir)) {
+      logger.info({ distDir }, "serving SPA from webDistDir");
+      app.use(express.static(distDir, { index: "index.html" }));
+      // SPA fallback: any unmatched non-API GET serves index.html.
+      app.use((req, res, next) => {
+        if (
+          req.method === "GET" &&
+          !req.path.startsWith("/api") &&
+          req.path !== "/healthz" &&
+          !req.path.startsWith("/.well-known")
+        ) {
+          res.sendFile(join(distDir, "index.html"), (err) => {
+            if (err) next();
+          });
+          return;
+        }
+        next();
+      });
+    } else {
+      logger.warn({ webDistDir: config.webDistDir }, "WEB_DIST_DIR set but directory does not exist — SPA serving disabled");
+    }
+  }
 
   app.use(notFoundHandler);
   app.use(createErrorHandler(logger));

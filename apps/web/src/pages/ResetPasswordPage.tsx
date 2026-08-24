@@ -5,7 +5,7 @@ import { useSubmit } from "../lib/submit";
 import { Alert } from "../ui/Alert";
 import { Button } from "../ui/Button";
 import { AuthShell, Card } from "../ui/Layout";
-import { TextField } from "../ui/TextField";
+import { PasswordField } from "../ui/PasswordField";
 
 export function ResetPasswordPage() {
   const [searchParams] = useSearchParams();
@@ -63,18 +63,16 @@ export function ResetPasswordPage() {
   } else {
     content = (
       <form onSubmit={onSubmit} noValidate>
-        <TextField
+        <PasswordField
           label="New password"
-          type="password"
           autoComplete="new-password"
           placeholder="At least 12 characters"
           value={password}
           error={fieldErrors.password}
           onChange={(e) => setPassword(e.target.value)}
         />
-        <TextField
+        <PasswordField
           label="Confirm new password"
-          type="password"
           autoComplete="new-password"
           placeholder="Repeat your new password"
           value={confirm}

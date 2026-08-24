@@ -41,7 +41,7 @@ const child = spawn(process.execPath, [tsxCli, "src/app/bootstrap.ts"], {
     PORT: "3001",
     DATABASE_URL: "postgres://postgres:postgres@localhost:5432/auuth_test",
     EMAIL_PROVIDER: "console",
-    SERVICE_API_KEY: "contract-test-service-key",
+    SERVICE_API_KEYS: "contract-test-service-key",
     RATE_LIMITS_JSON: JSON.stringify(rateLimits),
   },
 });

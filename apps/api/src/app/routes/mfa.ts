@@ -8,6 +8,7 @@ import type { SessionService } from "../../modules/session/session-service.js";
 import type { TokenService } from "../../modules/identity/token-service.js";
 import { canLogin } from "../../modules/identity/account-state-policy.js";
 
+import type { EmailService } from "../../modules/email/email-service.js";
 import type { MfaService } from "../../modules/mfa/mfa-service.js";
 import type { SecurityEventService } from "../../modules/security-events/security-events-service.js";
 import { createRateLimit, ipKeyFn } from "../middleware/rate-limit.js";
@@ -22,6 +23,7 @@ export interface MfaRouterDeps {
   sessions: SessionService;
   users: UserService;
   tokens: TokenService;
+  emails: EmailService;
   mfa: MfaService;
   securityEvents?: SecurityEventService;
 }
@@ -33,6 +35,7 @@ export function createMfaRouter({
   sessions,
   users,
   tokens,
+  emails,
   mfa,
   securityEvents,
 }: MfaRouterDeps): Router {
@@ -158,6 +161,8 @@ export function createMfaRouter({
       }
       await mfa.disable(user.id, code);
       await sessions.revokeAllExcept(user.id, session.id);
+      // D3: notify the account owner that 2FA was turned off.
+      await emails.queueSecurityAlert("mfa-disabled", user.email);
       await securityEvents?.record({
         eventType: "MFA_DISABLED",
         userId: user.id,

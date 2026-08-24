@@ -1,4 +1,4 @@
-import { type ReactNode, type SubmitEvent, useEffect, useRef, useState } from "react";
+import { type ReactNode, type SubmitEvent, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../lib/auth";
 import { assertPasswordValid, authApi, mfaApi } from "../lib/api";
@@ -7,6 +7,7 @@ import { StatusValue, VerifiedBadge } from "./AccountSettingsStatus";
 import { Alert } from "./Alert";
 import { Button } from "./Button";
 import { PasswordField } from "./PasswordField";
+import { RecoveryCodes } from "./RecoveryCodes";
 import { TextField } from "./TextField";
 
 type View = "list" | "password" | "2fa" | "codes";
@@ -27,12 +28,6 @@ export function AccountSettingsSecurity() {
   const [code, setCode] = useState("");
   const [fieldError, setFieldError] = useState<string | null>(null);
   const [recoveryCodes, setRecoveryCodes] = useState<string[] | null>(null);
-  const [copied, setCopied] = useState(false);
-  // Clear copy-feedback timer on unmount (L-85).
-  const copyTimer = useRef<number | undefined>(undefined);
-  useEffect(() => () => {
-    if (copyTimer.current !== undefined) window.clearTimeout(copyTimer.current);
-  }, []);
 
   // Shared transient inputs must not bleed between sub-views.
   function switchView(next: View) {
@@ -109,15 +104,6 @@ export function AccountSettingsSecurity() {
     });
   }
 
-  function copyCodes() {
-    if (recoveryCodes !== null) {
-      void navigator.clipboard.writeText(recoveryCodes.join("\n"));
-      setCopied(true);
-      if (copyTimer.current !== undefined) window.clearTimeout(copyTimer.current);
-      copyTimer.current = window.setTimeout(() => setCopied(false), 2000);
-    }
-  }
-
   const onManageMfa = () => {
     if (user.mfaEnabled) {
       switchView("2fa");
@@ -168,8 +154,6 @@ export function AccountSettingsSecurity() {
         onCode={setCode}
         onSubmit={onRegenerate}
         recoveryCodes={recoveryCodes}
-        copied={copied}
-        onCopy={copyCodes}
         onBack={() => switchView("list")}
       />
     );
@@ -319,8 +303,6 @@ function RecoveryCodesView({
   onCode,
   onSubmit,
   recoveryCodes,
-  copied,
-  onCopy,
   onBack,
 }: Readonly<{
   submit: SubmitState;
@@ -329,8 +311,6 @@ function RecoveryCodesView({
   onCode: (value: string) => void;
   onSubmit: (event: SubmitEvent<HTMLFormElement>) => void;
   recoveryCodes: string[] | null;
-  copied: boolean;
-  onCopy: () => void;
   onBack: () => void;
 }>) {
   return (
@@ -358,22 +338,7 @@ function RecoveryCodesView({
           </Button>
         </form>
       ) : (
-        <>
-          <Alert tone="info">Save these somewhere safe. Each can be used only once.</Alert>
-          <div className="grid grid-cols-2 gap-2 my-3">
-            {recoveryCodes.map((recoveryCode) => (
-              <code
-                key={recoveryCode}
-                className="font-mono text-xs text-center bg-bg-elevated border border-border rounded-md px-2 py-1 text-text-muted tracking-wider"
-              >
-                {recoveryCode}
-              </code>
-            ))}
-          </div>
-          <Button variant="ghost" onClick={onCopy}>
-            {copied ? "✓ Copied" : "Copy codes"}
-          </Button>
-        </>
+        <RecoveryCodes codes={recoveryCodes} />
       )}
     </DetailView>
   );

@@ -10,11 +10,11 @@ import { Button } from "./Button";
 import { TextField } from "./TextField";
 
 const STATUS_STYLES: Record<string, { label: string; color: string }> = {
-  ACTIVE: { label: "Active", color: "#22C55E" },
-  PENDING_VERIFICATION: { label: "Pending verification", color: "#F59E0B" },
-  SUSPENDED: { label: "Suspended", color: "#F97316" },
-  LOCKED: { label: "Locked", color: "#EF4444" },
-  DEACTIVATED: { label: "Deactivated", color: "#A1A1AA" },
+  ACTIVE: { label: "Active", color: "var(--color-success)" },
+  PENDING_VERIFICATION: { label: "Pending verification", color: "var(--color-warning)" },
+  SUSPENDED: { label: "Suspended", color: "var(--color-suspended)" },
+  LOCKED: { label: "Locked", color: "var(--color-danger)" },
+  DEACTIVATED: { label: "Deactivated", color: "var(--color-text-muted)" },
 };
 
 export function AccountSettingsProfile() {

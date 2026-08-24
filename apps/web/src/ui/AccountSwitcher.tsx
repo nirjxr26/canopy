@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useAuth } from "../lib/auth";
 import { useSubmit } from "../lib/submit";
 import { AccountSettingsPopup } from "./AccountSettingsPopup";
@@ -9,6 +9,20 @@ export function AccountSwitcher() {
   const logoutSubmit = useSubmit();
   const [open, setOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+
+  // Esc closes the menu and returns focus to the trigger.
+  useEffect(() => {
+    if (!open) return;
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setOpen(false);
+        triggerRef.current?.focus();
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [open]);
 
   if (user === null) {
     return null;
@@ -19,6 +33,7 @@ export function AccountSwitcher() {
   return (
     <div className="relative">
       <button
+        ref={triggerRef}
         type="button"
         onClick={() => setOpen((value) => !value)}
         aria-haspopup="menu"

@@ -16,6 +16,8 @@
   --color-accent-contrast: #141414;
   --color-danger: #FF6B6B;
   --color-success: #4ADE80;
+  --color-warning: #F59E0B;
+  --color-suspended: #F97316;
 }
 
 @layer base {
