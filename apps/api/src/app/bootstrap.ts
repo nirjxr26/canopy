@@ -27,6 +27,11 @@ import { createApp } from "./app.js";
 const config = configFromEnv();
 const logger = createLogger(config.logLevel);
 
+// §11#1: SESSION_SECRET is accepted for forward-compat but intentionally unused.
+if (config.sessionSecret !== undefined) {
+  logger.warn("SESSION_SECRET is set but unused — sessions use per-session CSPRNG secrets; you can remove it.");
+}
+
 // Single-instance deploys may set RUN_MIGRATIONS_ON_BOOT=true; multi-instance
 // deployments must migrate out-of-band (npm run migrate) to avoid boot races.
 if (config.runMigrationsOnBoot) {

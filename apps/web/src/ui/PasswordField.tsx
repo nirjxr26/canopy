@@ -9,11 +9,17 @@ interface PasswordFieldProps extends InputHTMLAttributes<HTMLInputElement> {
 export function PasswordField({ label, error, hint, id, className, ...rest }: Readonly<PasswordFieldProps>) {
   const autoId = useId();
   const inputId = id ?? autoId;
+  const hintId = useId();
+  const errorId = useId();
   const [visible, setVisible] = useState(false);
-  
+
   const baseInputClasses = "w-full pl-3 pr-10 py-2.5 bg-bg-elevated border border-border rounded-md text-text text-sm placeholder:text-text-faint outline-none transition";
   const errorInputClasses = error ? "border-danger" : "";
   const combinedInputClasses = `${baseInputClasses} ${errorInputClasses} ${className ?? ""}`.trim();
+
+  const describedBy = [error ? errorId : null, hint && !error ? hintId : null]
+    .filter(Boolean)
+    .join(" ");
 
   return (
     <div className="flex flex-col gap-1.5 mb-4">
@@ -26,12 +32,14 @@ export function PasswordField({ label, error, hint, id, className, ...rest }: Re
           className={combinedInputClasses}
           type={visible ? "text" : "password"}
           aria-invalid={error ? true : undefined}
+          aria-describedby={describedBy || undefined}
           {...rest}
         />
         <button
           type="button"
           className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 flex items-center justify-center bg-transparent border-0 rounded-md text-text-faint cursor-pointer focus:outline-none shrink-0"
           aria-label={visible ? "Hide password" : "Show password"}
+          aria-pressed={visible}
           onClick={() => setVisible((v) => !v)}
         >
           {visible ? (
@@ -49,8 +57,16 @@ export function PasswordField({ label, error, hint, id, className, ...rest }: Re
           )}
         </button>
       </div>
-      {hint && !error ? <span className="text-[12.5px] text-text-faint">{hint}</span> : null}
-      {error ? <span className="text-[12.5px] text-danger">{error}</span> : null}
+      {hint && !error ? (
+        <span id={hintId} className="text-[12.5px] text-text-faint">
+          {hint}
+        </span>
+      ) : null}
+      {error ? (
+        <span id={errorId} className="text-[12.5px] text-danger">
+          {error}
+        </span>
+      ) : null}
     </div>
   );
 }

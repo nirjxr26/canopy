@@ -7,6 +7,7 @@ import { useSubmit } from "../lib/submit";
 import { Alert } from "../ui/Alert";
 import { Button } from "../ui/Button";
 import { AuthShell, Card } from "../ui/Layout";
+import { RecoveryCodes } from "../ui/RecoveryCodes";
 import { TextField } from "../ui/TextField";
 
 type Step = "enroll" | "verify" | "codes";
@@ -38,7 +39,6 @@ export function MfaSetupPage() {
   const [fieldError, setFieldError] = useState<string | null>(null);
   const [recoveryCodes, setRecoveryCodes] = useState<string[] | null>(null);
   const [copiedSecret, setCopiedSecret] = useState(false);
-  const [copiedCodes, setCopiedCodes] = useState(false);
   const started = useRef(false);
 
   async function doEnroll() {
@@ -63,23 +63,21 @@ export function MfaSetupPage() {
     void enrollRun(doEnroll);
   }, [enrollRun]);
 
-  // Clear copy-feedback timers on unmount (L-85).
-  const timers = useRef<number[]>([]);
-  useEffect(() => () => timers.current.forEach((id) => clearTimeout(id)), []);
+  // Clear copy-feedback timer on unmount (L-85).
+  const secretTimer = useRef<number | undefined>(undefined);
+  useEffect(
+    () => () => {
+      if (secretTimer.current !== undefined) window.clearTimeout(secretTimer.current);
+    },
+    [],
+  );
 
   function copySecret() {
     if (secret !== null) {
       void navigator.clipboard.writeText(secret);
       setCopiedSecret(true);
-      timers.current.push(window.setTimeout(() => setCopiedSecret(false), 2000));
-    }
-  }
-
-  function copyCodes() {
-    if (recoveryCodes !== null) {
-      void navigator.clipboard.writeText(recoveryCodes.join("\n"));
-      setCopiedCodes(true);
-      timers.current.push(window.setTimeout(() => setCopiedCodes(false), 2000));
+      if (secretTimer.current !== undefined) window.clearTimeout(secretTimer.current);
+      secretTimer.current = window.setTimeout(() => setCopiedSecret(false), 2000);
     }
   }
 
@@ -98,7 +96,7 @@ export function MfaSetupPage() {
         await refresh();
       } catch (err) {
         if (err instanceof ApiError && err.code === "CONFLICT") {
-          window.alert("2FA is already enabled");
+          // Enabled elsewhere in another tab/device — land on the app.
           await refresh();
           navigate("/");
           return;
@@ -186,26 +184,12 @@ export function MfaSetupPage() {
   }
 
   function renderCodesContent(): ReactNode {
+    if (recoveryCodes === null) {
+      return null;
+    }
     return (
       <>
-        <Alert tone="info">
-          Store these somewhere safe — you&apos;ll need them if you lose your authenticator.
-          Each can be used only once.
-        </Alert>
-        <div className="grid grid-cols-2 gap-2 mb-4">
-          {recoveryCodes !== null
-            ? recoveryCodes.map((recoveryCode) => (
-                <code key={recoveryCode} className="font-mono text-xs text-center bg-bg-elevated border border-border rounded-md px-2 py-1 text-text-muted tracking-wider">
-                  {recoveryCode}
-                </code>
-              ))
-            : null}
-        </div>
-        <div className="flex gap-2.5 mb-3">
-          <Button variant="ghost" onClick={copyCodes}>
-            {copiedCodes ? "✓ Copied" : "Copy codes"}
-          </Button>
-        </div>
+        <RecoveryCodes codes={recoveryCodes} />
         <Button block onClick={() => navigate("/")}>
           Done
         </Button>

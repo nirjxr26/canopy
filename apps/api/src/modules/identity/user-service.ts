@@ -2,8 +2,9 @@ import { AppError, ERROR_CODES } from "../../shared/app-error.js";
 import { createId } from "../../infrastructure/crypto/ulid.js";
 import type { PasswordHasher } from "../../infrastructure/crypto/password.js";
 import {
-  breachedPasswords,
   containsEmailIdentity,
+  createLocalBreachedPasswordChecker,
+  type BreachedPasswordChecker,
 } from "../../infrastructure/crypto/breached-passwords.js";
 import { normalizeEmail } from "./email-normalizer.js";
 import { assertTransition } from "./account-state-policy.js";
@@ -64,7 +65,11 @@ export interface UserService {
  * §6.5 policy: min/max length + breached-password blocklist + must-not-contain
  * account identity. Server-side is the single source of truth (R-9).
  */
-export function assertPasswordPolicy(password: string, context?: PasswordPolicyContext): void {
+export async function assertPasswordPolicy(
+  password: string,
+  context?: PasswordPolicyContext,
+  breached: BreachedPasswordChecker = createLocalBreachedPasswordChecker(),
+): Promise<void> {
   const unmet = getPasswordRequirements(password)
     .filter((r) => !r.met)
     .map((r) => r.label);
@@ -74,7 +79,7 @@ export function assertPasswordPolicy(password: string, context?: PasswordPolicyC
       `Password must meet all requirements: ${unmet.join(", ")}.`,
     );
   }
-  if (breachedPasswords.isBreached(password)) {
+  if (await breached.isBreached(password)) {
     throw new AppError(
       ERROR_CODES.VALIDATION,
       "This password appears in known data breaches — choose something more unique.",
@@ -91,6 +96,7 @@ export function assertPasswordPolicy(password: string, context?: PasswordPolicyC
 async function registerUser(
   repository: UserRepository,
   hasher: PasswordHasher,
+  breached: BreachedPasswordChecker,
   input: RegisterInput,
 ): Promise<RegisterResult> {
   let email: string;
@@ -99,7 +105,7 @@ async function registerUser(
   } catch {
     throw new AppError(ERROR_CODES.VALIDATION, "Invalid email address");
   }
-  assertPasswordPolicy(input.password, { email });
+  await assertPasswordPolicy(input.password, { email }, breached);
   const existing = await repository.findByEmail(email);
   if (existing !== null) {
     // §6.1 signup timing uniformity: burn one full argon2 verify so duplicate
@@ -161,9 +167,10 @@ async function verifyUserEmail(
 export function createUserService(
   repository: UserRepository,
   hasher: PasswordHasher,
+  breached: BreachedPasswordChecker = createLocalBreachedPasswordChecker(),
 ): UserService {
   return {
-    register: (input) => registerUser(repository, hasher, input),
+    register: (input) => registerUser(repository, hasher, breached, input),
 
     findByEmail(email) {
       return repository.findByEmail(normalizeEmail(email));
@@ -193,8 +200,8 @@ export function createUserService(
       }
     },
 
-    async updatePassword(id, newPassword, context?: PasswordPolicyContext) {
-      assertPasswordPolicy(newPassword, context);
+    async updatePassword(id, newPassword, context) {
+      await assertPasswordPolicy(newPassword, context, breached);
       const passwordHash = await hasher.hash(newPassword);
       const updated = await repository.update(id, { passwordHash, updatedAt: new Date() });
       if (!updated) {

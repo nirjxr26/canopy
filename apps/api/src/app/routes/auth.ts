@@ -13,6 +13,7 @@ import type { SessionService } from "../../modules/session/session-service.js";
 import { sessionCookieName } from "../../modules/session/session-service.js";
 import type { TokenService } from "../../modules/identity/token-service.js";
 import type { AuthFlows } from "../../modules/identity/auth-flows.js";
+import type { EmailService } from "../../modules/email/email-service.js";
 import type { MfaService } from "../../modules/mfa/mfa-service.js";
 import type { SecurityEventService } from "../../modules/security-events/security-events-service.js";
 import { createRateLimit, ipKeyFn } from "../middleware/rate-limit.js";
@@ -28,6 +29,7 @@ export interface AuthRouterDeps {
   tokens: TokenService;
   flows: AuthFlows;
   mfa: MfaService;
+  emails: EmailService;
   securityEvents?: SecurityEventService;
 }
 
@@ -79,10 +81,17 @@ export function createIntrospectRouter({
     createRateLimit(limiter, config.rateLimits.introspect, ipKeyFn),
     async (req, res, next) => {
       try {
-        const serviceKey = req.header("X-Service-Key");
-        if (!config.serviceApiKey || !serviceKeyMatches(serviceKey, config.serviceApiKey)) {
-          throw new AppError(ERROR_CODES.UNAUTHENTICATED, "Invalid service key");
-        }
+      const serviceKey = req.header("X-Service-Key");
+      // D2: evaluate EVERY configured key (no early exit) with constant-time
+      // digests, so timing reveals neither which key nor how far off it was.
+      const keyAccepted =
+        config.serviceApiKeys.length > 0 &&
+        config.serviceApiKeys
+          .map((candidate) => serviceKeyMatches(serviceKey, candidate))
+          .some(Boolean);
+      if (!keyAccepted) {
+        throw new AppError(ERROR_CODES.UNAUTHENTICATED, "Invalid service key");
+      }
         const body = req.body ?? {};
         const secret = typeof body.sessionSecret === "string" ? body.sessionSecret : "";
         if (!secret) {
@@ -151,6 +160,7 @@ export function createAuthRouter({
   tokens,
   flows,
   mfa,
+  emails,
   securityEvents,
 }: AuthRouterDeps): Router {
   const router = Router();
@@ -181,6 +191,8 @@ export function createAuthRouter({
       if (!accountFailed.allowed) {
         const locked = applyLock(account, config.lockDurationMin * 60_000, new Date());
         await users.lockUntil(account.id, locked.lockedUntil!);
+        // D3: notify the account owner their account was locked.
+        await emails.queueSecurityAlert("account-locked", account.email);
         await securityEvents?.record({
           eventType: "ACCOUNT_LOCKED",
           userId: account.id,
@@ -358,6 +370,8 @@ export function createAuthRouter({
       }
       await users.updatePassword(account.id, newPassword, { email: account.email });
       await sessions.revokeAll(account.id);
+      // D3: notify the account owner their password changed.
+      await emails.queueSecurityAlert("password-changed", account.email);
       await securityEvents?.record({
         eventType: "PASSWORD_CHANGED",
         userId: account.id,

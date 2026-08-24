@@ -50,7 +50,7 @@ function makeTestConfig() {
     FRONTEND_URL: "http://localhost:5173",
     AUTH_BASE_URL: "http://localhost:3000",
     MFA_ENCRYPTION_KEYS: TEST_MFA_KEY,
-    SERVICE_API_KEY: SERVICE_KEY,
+    SERVICE_API_KEYS: SERVICE_KEY,
   });
 }
 

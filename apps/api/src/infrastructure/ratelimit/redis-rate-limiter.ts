@@ -42,4 +42,12 @@ export class RedisRateLimiter implements RateLimiter {
   async dispose(): Promise<void> {
     this.client.disconnect();
   }
+
+  async ping(): Promise<boolean> {
+    try {
+      return (await this.client.ping()) === "PONG";
+    } catch {
+      return false;
+    }
+  }
 }

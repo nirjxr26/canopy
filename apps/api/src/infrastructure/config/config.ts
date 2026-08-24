@@ -58,7 +58,9 @@ const envSchema = z.object({
   RATE_LIMITS_JSON: z.string().optional(),
   LOCK_DURATION_MIN: intFrom(1).default(15),
   MFA_MAX_FAILED_ATTEMPTS: intFrom(1).default(5),
-  SERVICE_API_KEY: z.string().optional(),
+  SERVICE_API_KEYS: z.string().optional(),
+  BREACHED_PASSWORD_CHECKER: z.enum(["local", "hibp"]).optional(),
+  WEB_DIST_DIR: z.string().optional(),
   JWT_PRIVATE_KEY: z.string().optional(),
   JWT_ISSUER: z.string().min(1).optional(),
   JWT_AUDIENCE: z.string().min(1).optional(),
@@ -107,7 +109,9 @@ export interface Config {
   readonly rateLimits: Record<RateLimitName, RateLimitSpec>;
   readonly lockDurationMin: number;
   readonly mfaMaxFailedAttempts: number;
-  readonly serviceApiKey: string | undefined;
+  readonly serviceApiKeys: readonly string[];
+  readonly breachedPasswordCheckerMode: "local" | "hibp";
+  readonly webDistDir: string | undefined;
   readonly jwtPrivateKey: string | undefined;
   readonly jwtIssuer: string;
   readonly jwtAudience: string;
@@ -157,8 +161,16 @@ function requireProdSecrets(parsed: z.infer<typeof envSchema>): void {
   if (parsed.HTTPS_ENFORCED !== true) failures.push("HTTPS_ENFORCED=true");
   if (parsed.EMAIL_PROVIDER !== "smtp") failures.push("EMAIL_PROVIDER=smtp");
   if (parsed.RATE_LIMITER_BACKEND !== "redis") failures.push("RATE_LIMITER_BACKEND=redis");
-  if (parsed.SERVICE_API_KEY === undefined || parsed.SERVICE_API_KEY.length < 16) {
-    failures.push("SERVICE_API_KEY (min 16 chars)");
+  const serviceKeyList = (parsed.SERVICE_API_KEYS ?? "")
+    .split(",")
+    .map((k) => k.trim())
+    .filter((k) => k.length > 0);
+  if (parsed.NODE_ENV === "production") {
+    if (serviceKeyList.length === 0) {
+      failures.push("SERVICE_API_KEYS (comma-separated, min 16 chars each)");
+    } else if (serviceKeyList.some((k) => k.length < 16)) {
+      failures.push("SERVICE_API_KEYS entries (min 16 chars each)");
+    }
   }
   if (parsed.JWT_PRIVATE_KEY === undefined || parsed.JWT_PRIVATE_KEY.length < 16) {
     failures.push("JWT_PRIVATE_KEY (RS256 PEM)");
@@ -242,6 +254,12 @@ export function loadConfig(env: NodeJS.ProcessEnv): Config {
 
   const mfaEncryptionKeys = parseKeyList(parsed.MFA_ENCRYPTION_KEYS);
   const allowedOrigins = parseAllowedOrigins(parsed);
+  const serviceApiKeys = Object.freeze(
+    (parsed.SERVICE_API_KEYS ?? "")
+      .split(",")
+      .map((k) => k.trim())
+      .filter((k) => k.length > 0),
+  );
 
   let rateLimits: Record<RateLimitName, RateLimitSpec>;
   try {
@@ -280,7 +298,12 @@ export function loadConfig(env: NodeJS.ProcessEnv): Config {
     rateLimits: Object.freeze(rateLimits),
     lockDurationMin: parsed.LOCK_DURATION_MIN,
     mfaMaxFailedAttempts: parsed.MFA_MAX_FAILED_ATTEMPTS,
-    serviceApiKey: parsed.SERVICE_API_KEY,
+    serviceApiKeys: Object.freeze(serviceApiKeys),
+    // D1: HIBP is the production default; explicit override wins (local keeps tests hermetic).
+    breachedPasswordCheckerMode:
+      parsed.BREACHED_PASSWORD_CHECKER ??
+      (parsed.NODE_ENV === "production" ? "hibp" : "local"),
+    webDistDir: parsed.WEB_DIST_DIR,
     jwtPrivateKey: parsed.JWT_PRIVATE_KEY,
     jwtIssuer: parsed.JWT_ISSUER ?? parsed.AUTH_BASE_URL,
     jwtAudience: parsed.JWT_AUDIENCE ?? parsed.AUTH_BASE_URL,

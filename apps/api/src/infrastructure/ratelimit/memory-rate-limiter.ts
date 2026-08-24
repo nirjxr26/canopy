@@ -60,6 +60,10 @@ export class InMemoryRateLimiter implements RateLimiter {
     this.windows.clear();
   }
 
+  async ping(): Promise<boolean> {
+    return true;
+  }
+
   private sweepIfNeeded(now: number): void {
     // Throttle unconditionally: once at capacity, sweeping on every request would
     // turn each check into an O(n) scan; insert-time eviction still caps size.

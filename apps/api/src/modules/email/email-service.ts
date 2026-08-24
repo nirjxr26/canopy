@@ -128,8 +128,28 @@ export interface EmailService {
     recipient: string,
     token: string,
   ): Promise<void>;
+  /** D3: transactional security notifications (no links, no tokens). */
+  queueSecurityAlert(kind: SecurityAlertKind, recipient: string): Promise<void>;
   processDueEmails(now?: Date): Promise<number>;
 }
+
+export type SecurityAlertKind = "password-changed" | "mfa-disabled" | "account-locked";
+
+const SECURITY_ALERT_META: Record<SecurityAlertKind, { subject: string; line: string }> = {
+  "password-changed": {
+    subject: "Your password was changed",
+    line: "The password for your account was just changed.",
+  },
+  "mfa-disabled": {
+    subject: "Two-factor authentication was disabled",
+    line: "Two-factor authentication was just turned off for your account.",
+  },
+  "account-locked": {
+    subject: "Your account was temporarily locked",
+    line:
+      "There were too many failed sign-in attempts, so your account was locked temporarily. It will unlock automatically.",
+  },
+};
 
 const EMAIL_META: Record<EmailKind, { subject: string; buttonLabel: string; expiresIn: string }> = {
   "verify-email": { subject: "Verify your email", buttonLabel: "Verify email", expiresIn: "24 hours" },
@@ -174,6 +194,23 @@ export function createEmailService(deps: {
   }
 
   return {
+    async queueSecurityAlert(kind, recipient) {
+      const meta = SECURITY_ALERT_META[kind];
+      const body =
+        `${meta.subject}\n\n` +
+        `${meta.line}\n\n` +
+        `If this was you, you can ignore this email. If not, reset your password immediately.`;
+      // Plain-body row (tokenRef = null): the worker sends it as-is, no decryption.
+      await outbox.insert({
+        recipient,
+        subject: meta.subject,
+        body,
+        htmlBody: null,
+        tokenRef: null,
+        messageId: createId("eml"),
+      });
+    },
+
     async queue(kind, recipient, token) {
       const { message, url } = buildMessage(kind, recipient, token);
       const sealed = encryptSecret(JSON.stringify({ text: message.body, html: message.html }), keys);

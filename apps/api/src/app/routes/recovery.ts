@@ -112,7 +112,7 @@ export function createRecoveryRouter({
       const body = req.body ?? {};
       const raw = typeof body.token === "string" ? body.token : "";
       const newPassword = typeof body.newPassword === "string" ? body.newPassword : "";
-      assertPasswordPolicy(newPassword);
+      await assertPasswordPolicy(newPassword);
       const userId = await flows.resetPassword(raw, newPassword);
       if (userId === null) {
         throw new AppError(ERROR_CODES.TOKEN_INVALID, "Invalid or expired reset token");
