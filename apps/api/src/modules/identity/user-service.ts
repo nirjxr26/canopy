@@ -9,9 +9,16 @@ import {
 import { normalizeEmail } from "./email-normalizer.js";
 import { assertTransition } from "./account-state-policy.js";
 import type { UserRecord, UserRepository, UserUpdate, UserWithPasswordHash } from "./user-repository.js";
+import {
+  findUnmetRequirements,
+  getPasswordRequirements as getPasswordRequirementsShared,
+  PASSWORD_MAX_LENGTH,
+  PASSWORD_MIN_LENGTH,
+} from "@auuth/password-policy";
 
-export const PASSWORD_MIN_LENGTH = 12;
-export const PASSWORD_MAX_LENGTH = 128;
+// Re-exported so existing consumers keep their import paths; the shared
+// workspace package is the single source of truth (M1).
+export { PASSWORD_MIN_LENGTH, PASSWORD_MAX_LENGTH };
 
 export interface PasswordPolicyContext {
   /** Account identity — passwords embedding it are rejected (NIST 800-63B). */
@@ -25,16 +32,7 @@ export interface PasswordRequirement {
 
 /** §6.5: length-only policy (complexity rules intentionally not used). */
 export function getPasswordRequirements(password: string): PasswordRequirement[] {
-  return [
-    {
-      label: `At least ${PASSWORD_MIN_LENGTH} characters`,
-      met: password.length >= PASSWORD_MIN_LENGTH,
-    },
-    {
-      label: `No more than ${PASSWORD_MAX_LENGTH} characters`,
-      met: password.length <= PASSWORD_MAX_LENGTH,
-    },
-  ];
+  return getPasswordRequirementsShared(password);
 }
 
 export interface RegisterInput {
@@ -70,9 +68,7 @@ export async function assertPasswordPolicy(
   context?: PasswordPolicyContext,
   breached: BreachedPasswordChecker = createLocalBreachedPasswordChecker(),
 ): Promise<void> {
-  const unmet = getPasswordRequirements(password)
-    .filter((r) => !r.met)
-    .map((r) => r.label);
+  const unmet = findUnmetRequirements(password);
   if (unmet.length > 0) {
     throw new AppError(
       ERROR_CODES.VALIDATION,

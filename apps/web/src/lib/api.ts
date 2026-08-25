@@ -31,30 +31,17 @@ export class ApiError extends Error {
   }
 }
 
-export const PASSWORD_MIN_LENGTH = 12;
-export const PASSWORD_MAX_LENGTH = 128;
+export { PASSWORD_MAX_LENGTH, PASSWORD_MIN_LENGTH } from "@auuth/password-policy";
+export type { PasswordRequirement } from "@auuth/password-policy";
+import { getPasswordRequirements as sharedRequirements } from "@auuth/password-policy";
 
-export interface PasswordRequirement {
-  label: string;
-  met: boolean;
-}
-
-/** §6.5: length-only server policy; client mirrors for UX, server is the validator. */
-export function getPasswordRequirements(password: string): PasswordRequirement[] {
-  return [
-    {
-      label: `At least ${PASSWORD_MIN_LENGTH} characters`,
-      met: password.length >= PASSWORD_MIN_LENGTH,
-    },
-    {
-      label: `No more than ${PASSWORD_MAX_LENGTH} characters`,
-      met: password.length <= PASSWORD_MAX_LENGTH,
-    },
-  ];
+/** Client mirror for UX; the server policy is the single validator (§6.5). */
+export function getPasswordRequirements(password: string) {
+  return sharedRequirements(password);
 }
 
 export function assertPasswordValid(password: string): string | null {
-  const unmet = getPasswordRequirements(password)
+  const unmet = sharedRequirements(password)
     .filter((r) => !r.met)
     .map((r) => r.label);
   if (unmet.length > 0) {

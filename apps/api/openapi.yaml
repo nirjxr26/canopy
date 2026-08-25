@@ -1,9 +1,8 @@
 # Contract-testing notes (npm run test:contract against :3001):
 # - Scope: unauthenticated surface + X-Service-Key (introspect). Session-cookie
 #   operations are covered by e2e, so "missing_auth" warnings are suppressed.
-# - "validation_mismatch" warnings are suppressed by design: token/credential
-#   validation is server-side (crypto), so generated garbage is correctly rejected
-#   and anti-enumeration endpoints accept any input.
+# - Anti-enumeration endpoints accept arbitrary token/garbage input by design;
+#   crypto-side validation is server-authoritative.
 openapi: "3.1.0"
 info:
   title: auuth Authentication API

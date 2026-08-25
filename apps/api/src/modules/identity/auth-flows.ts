@@ -11,6 +11,8 @@ import { createTokenService } from "./token-service.js";
 import { createUserRepository } from "./user-repository.js";
 import { createUserService } from "./user-service.js";
 import type { RegisterInput } from "./user-service.js";
+import type { BreachedPasswordChecker } from "../../infrastructure/crypto/breached-passwords.js";
+import { createLocalBreachedPasswordChecker } from "../../infrastructure/crypto/breached-passwords.js";
 
 export type SignupOutcome = "created" | "duplicate_active" | "duplicate_pending_renewed";
 
@@ -33,13 +35,15 @@ export function createAuthFlows(deps: {
   provider: EmailProvider;
   keys: readonly EncryptionKeyEntry[];
   logger: pino.Logger;
+  breached?: BreachedPasswordChecker;
 }): AuthFlows {
   const { db, hasher, config, provider, keys, logger } = deps;
+  const breached = deps.breached ?? createLocalBreachedPasswordChecker();
 
   return {
     async signup(input) {
       return db.transaction().execute(async (tx) => {
-        const users = createUserService(createUserRepository(tx), hasher);
+        const users = createUserService(createUserRepository(tx), hasher, breached);
         const tokens = createTokenService(createTokenRepository(tx));
         const emails = createEmailService({
           outbox: createOutboxRepository(tx),
@@ -72,7 +76,7 @@ export function createAuthFlows(deps: {
 
     async verifyEmailToken(rawToken, now = new Date()) {
       return db.transaction().execute(async (tx) => {
-        const users = createUserService(createUserRepository(tx), hasher);
+        const users = createUserService(createUserRepository(tx), hasher, breached);
         const tokens = createTokenService(createTokenRepository(tx));
         const userId = await tokens.consume("EMAIL_VERIFICATION", rawToken, now);
         if (userId === null) {
@@ -85,7 +89,7 @@ export function createAuthFlows(deps: {
 
     async resetPassword(rawToken, newPassword, now = new Date()) {
       return db.transaction().execute(async (tx) => {
-        const users = createUserService(createUserRepository(tx), hasher);
+        const users = createUserService(createUserRepository(tx), hasher, breached);
         const tokens = createTokenService(createTokenRepository(tx));
         const sessions = createSessionRepository(tx);
         // Resolve identity first so the policy can reject passwords embedding

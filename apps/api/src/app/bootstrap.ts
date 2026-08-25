@@ -22,6 +22,10 @@ import { createSecurityEventRepository } from "../modules/security-events/securi
 import { createSecurityEventService } from "../modules/security-events/security-events-service.js";
 import { createJwtSigner } from "../modules/jwt/jwt-service.js";
 import { createRetentionJob } from "../infrastructure/jobs/retention.js";
+import {
+  createCompositeBreachedPasswordChecker,
+  createLocalBreachedPasswordChecker,
+} from "../infrastructure/crypto/breached-passwords.js";
 import { createApp } from "./app.js";
 
 const config = configFromEnv();
@@ -51,7 +55,15 @@ const limiter = createRateLimiter(config);
 // Pre-compute the enumeration-defense dummy hash so the first unknown-email login
 // pays verify cost only (spec §6.2: computed once at boot).
 await hasher.dummyHash();
-const users = createUserService(createUserRepository(db), hasher);
+// D1/S1: mode-driven breached-password checking (hibp composes local + HIBP fail-open).
+const breachedChecker =
+  config.breachedPasswordCheckerMode === "hibp"
+    ? createCompositeBreachedPasswordChecker({ logger })
+    : createLocalBreachedPasswordChecker();
+if (config.serviceApiKeys.length === 0) {
+  logger.warn("SERVICE_API_KEYS is empty — /auth/introspect will reject every request.");
+}
+const users = createUserService(createUserRepository(db), hasher, breachedChecker);
 const sessions = createSessionService(createSessionRepository(db), { getById: users.getById }, config);
 const tokens = createTokenService(createTokenRepository(db));
 const mfa = createMfaService({
@@ -103,6 +115,7 @@ const app = createApp({
   keys: config.mfaEncryptionKeys,
   securityEvents,
   jwtSigner,
+  breachedChecker,
 });
 
 const server = app.listen(config.port, () => {

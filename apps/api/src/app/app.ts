@@ -1,7 +1,8 @@
 import express from "express";
+import compression from "compression";
 import helmet from "helmet";
 import { existsSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { pinoHttp } from "pino-http";
 import type pino from "pino";
 import type { Kysely } from "kysely";
@@ -21,6 +22,8 @@ import {
 } from "../modules/security-events/security-events-service.js";
 import type { JwtSigner } from "../modules/jwt/jwt-service.js";
 import { createJwtSigner } from "../modules/jwt/jwt-service.js";
+import type { BreachedPasswordChecker } from "../infrastructure/crypto/breached-passwords.js";
+import { createLocalBreachedPasswordChecker } from "../infrastructure/crypto/breached-passwords.js";
 import { createAuthFlows } from "../modules/identity/auth-flows.js";
 import { sanitizeUrl } from "../infrastructure/logging/logger.js";
 import { requestIdMiddleware } from "./middleware/request-id.js";
@@ -49,6 +52,7 @@ export interface AppDeps {
   keys: readonly EncryptionKeyEntry[];
   securityEvents?: SecurityEventService;
   jwtSigner?: JwtSigner;
+  breachedChecker?: BreachedPasswordChecker;
 }
 
 export function createApp(deps: AppDeps): express.Express {
@@ -67,10 +71,12 @@ export function createApp(deps: AppDeps): express.Express {
     keys,
     securityEvents = createNoopSecurityEventService(),
     jwtSigner: signerDep,
+    breachedChecker: breachedDep,
   } = deps;
   const jwtSigner = signerDep ?? createJwtSigner(config);
+  const breachedChecker = breachedDep ?? createLocalBreachedPasswordChecker();
   const app = express();
-  const flows = createAuthFlows({ db, hasher, config, provider, keys, logger });
+  const flows = createAuthFlows({ db, hasher, config, provider, keys, logger, breached: breachedChecker });
 
   app.disable("x-powered-by");
   if (config.trustProxy > 0) {
@@ -78,6 +84,8 @@ export function createApp(deps: AppDeps): express.Express {
   }
 
   app.use(requestIdMiddleware);
+  // Compress JSON + SPA text responses (perf P2).
+  app.use(compression());
   // §6.10: security headers on every response, including error responses.
   app.use(
     helmet({
@@ -171,7 +179,19 @@ export function createApp(deps: AppDeps): express.Express {
     const distDir = resolve(process.cwd(), config.webDistDir);
     if (existsSync(distDir)) {
       logger.info({ distDir }, "serving SPA from webDistDir");
-      app.use(express.static(distDir, { index: "index.html" }));
+      app.use(
+        express.static(distDir, {
+          index: "index.html",
+          // P2: hashed Vite assets are immutable; entrypoint must revalidate.
+          setHeaders: (res, filePath) => {
+            if (filePath.includes(`${sep}assets${sep}`)) {
+              res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+            } else {
+              res.setHeader("Cache-Control", "no-cache");
+            }
+          },
+        }),
+      );
       // SPA fallback: any unmatched non-API GET serves index.html.
       app.use((req, res, next) => {
         if (
