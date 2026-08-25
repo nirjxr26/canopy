@@ -30,3 +30,4 @@ playwright-report/
 # local-only spec/status artifacts (removed from history by request)
 ARCHITECTURE.md
 MFA_FEATURE_REPORT.md
+apps/api/test-results/.last-run.json

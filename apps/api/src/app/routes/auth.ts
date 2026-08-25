@@ -189,10 +189,17 @@ export function createAuthRouter({
         config.rateLimits.loginAccount.windowMs,
       );
       if (!accountFailed.allowed) {
-        const locked = applyLock(account, config.lockDurationMin * 60_000, new Date());
-        await users.lockUntil(account.id, locked.lockedUntil!);
-        // D3: notify the account owner their account was locked.
-        await emails.queueSecurityAlert("account-locked", account.email);
+        const now = new Date();
+        // S2: transition-only locking — while a lock is already active we neither
+        // extend it nor re-send the notification (prevents indefinite attacker-
+        // driven extension and mailbox flooding).
+        const lockActive = account.lockedUntil !== null && account.lockedUntil > now;
+        if (!lockActive) {
+          const locked = applyLock(account, config.lockDurationMin * 60_000, now);
+          await users.lockUntil(account.id, locked.lockedUntil!);
+          // D3: notify the account owner once per lock episode.
+          await emails.queueSecurityAlert("account-locked", account.email);
+        }
         await securityEvents?.record({
           eventType: "ACCOUNT_LOCKED",
           userId: account.id,
